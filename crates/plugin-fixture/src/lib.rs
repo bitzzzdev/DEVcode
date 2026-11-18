@@ -25,6 +25,17 @@ impl Plugin for Fixture {
             }),
         }]
     }
+
+    fn call_tool(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        match name {
+            "fixture_echo" => Ok(serde_json::json!({ "echo": input })),
+            other => Err(format!("fixture has no tool {other}")),
+        }
+    }
 }
 
 // Same-toolchain Rust plugin trade-off: trait objects are not a stable C ABI.

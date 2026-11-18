@@ -9,6 +9,10 @@ publish.workspace = true
 devcode-ai = { path = "../ai" }
 devcode-core = { path = "../core" }
 devcode-tools = { path = "../tools" }
+devcode-plugin = { path = "../plugin" }
 devcode-util = { path = "../util" }
 serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
+
+[dev-dependencies]
+devcode-plugin-fixture = { path = "../plugin-fixture" }

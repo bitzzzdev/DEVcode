@@ -183,6 +183,7 @@ pub fn execute(
         started,
     )?;
 
+    let plugins = load_plugin_host(paths);
     let outcome = step_loop(
         conn,
         paths,
@@ -192,6 +193,7 @@ pub fn execute(
         on_text,
         on_tool,
         &session_id,
+        &plugins,
     );
     let finished = now_millis();
     match outcome {
@@ -255,8 +257,9 @@ pub fn run_admitted(
         json!({ "sessionID": session_id }),
         started,
     )?;
+    let plugins = load_plugin_host(paths);
     let outcome = step_loop(
-        conn, paths, model, &directory, max_steps, on_text, on_tool, session_id,
+        conn, paths, model, &directory, max_steps, on_text, on_tool, session_id, &plugins,
     );
     let finished = now_millis();
     match outcome {
@@ -289,6 +292,26 @@ pub fn run_admitted(
     }
 }
 
+const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "glob", "grep", "shell"];
+
+/// Load the user's native plugins for one run. Per-run `dlopen` is negligible; the
+/// alternative (a shared static host) would hold cdylib mappings for the process and
+/// complicate reload semantics on the service. Load failures print to stderr and do
+/// not abort the run.
+fn load_plugin_host(paths: &devcode_util::Paths) -> devcode_plugin::Host {
+    let dir = paths.config.join("plugins");
+    let mut host = devcode_plugin::Host::empty();
+    if !dir.is_dir() {
+        return host;
+    }
+    // Same trust model as the service-startup loader: the user's own plugins directory.
+    let (_loaded, errors) = unsafe { host.load_dir(&dir) };
+    for error in &errors {
+        eprintln!("plugin failed to load: {error}");
+    }
+    host
+}
+
 /// Stream steps until the model stops calling tools or the step budget runs out.
 #[allow(clippy::too_many_arguments)]
 fn step_loop(
@@ -300,9 +323,10 @@ fn step_loop(
     on_text: &mut dyn FnMut(&str),
     on_tool: &mut dyn FnMut(&str, &str),
     session_id: &str,
+    plugins: &devcode_plugin::Host,
 ) -> Result<(), String> {
     let model_json = model_json(model);
-    let tools = tool_specs();
+    let tools = tool_specs(plugins);
     let mut exhausted = true;
     for _step in 0..max_steps {
         let rows = devcode_core::session_message::history(conn, session_id)
@@ -373,7 +397,7 @@ fn step_loop(
                 &call.name,
                 call.arguments.lines().next().unwrap_or("").trim(),
             );
-            parts.push(execute_tool(paths, call, directory, session_id));
+            parts.push(execute_tool(paths, call, directory, session_id, plugins));
         }
 
         emit(
@@ -445,7 +469,25 @@ fn now_millis() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-fn tool_specs() -> Vec<ToolSpec> {
+fn tool_specs(plugins: &devcode_plugin::Host) -> Vec<ToolSpec> {
+    let builtins = builtin_tool_specs();
+    let mut specs = builtins;
+    // Plugin tools shadowing a builtin name are dropped: the builtin would win at
+    // execution time anyway, and offering both would confuse the model.
+    for plugin in plugins.tool_specs() {
+        if BUILTIN_TOOL_NAMES.contains(&plugin.name.as_str()) {
+            continue;
+        }
+        specs.push(ToolSpec {
+            name: plugin.name,
+            description: plugin.description,
+            input_schema: plugin.input_schema,
+        });
+    }
+    specs
+}
+
+fn builtin_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "read".into(),
@@ -647,6 +689,7 @@ fn execute_tool(
     call: &ToolCall,
     workdir: &std::path::Path,
     session_id: &str,
+    plugins: &devcode_plugin::Host,
 ) -> Value {
     let started = now_millis();
     let arguments: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
@@ -760,7 +803,11 @@ fn execute_tool(
                 .map_err(|error| error.to_string())
             })
         }
-        other => Err(format!("unknown tool: {other}")),
+        other => match plugins.call_tool(other, &arguments) {
+            Some(Ok(value)) => Ok(value.to_string()),
+            Some(Err(message)) => Err(message),
+            None => Err(format!("unknown tool: {other}")),
+        },
     };
     let finished = now_millis();
     match result {
@@ -790,6 +837,96 @@ fn tokens_value(usage: &devcode_ai::Usage) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_plugin_host(tag: &str) -> (devcode_plugin::Host, PathBuf) {
+        let workspace_target = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("debug")
+            .join("libdevcode_plugin_fixture.so");
+        if !workspace_target.exists() {
+            let status = std::process::Command::new(env!("CARGO"))
+                .args(["build", "--locked", "-p", "devcode-plugin-fixture"])
+                .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+                .status()
+                .expect("failed to invoke cargo for the fixture build");
+            assert!(status.success(), "fixture cdylib build failed");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "devcode-runner-plugin-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let nested = dir.join("fixture");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::copy(&workspace_target, nested.join("libfixture.so")).unwrap();
+        std::fs::write(
+            nested.join("plugin.json"),
+            serde_json::json!({
+                "id": "fixture",
+                "version": "0.1.0-rust",
+                "description": "fixture",
+                "library": "libfixture.so",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut host = devcode_plugin::Host::empty();
+        let (loaded, errors) = unsafe { host.load_dir(&dir) };
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(loaded.len(), 1);
+        (host, dir)
+    }
+
+    #[test]
+    fn plugin_tools_appear_in_specs_and_route_execution() {
+        let (host, dir) = fixture_plugin_host("9c");
+        let specs = tool_specs(&host);
+        let echo = specs
+            .iter()
+            .find(|spec| spec.name == "fixture_echo")
+            .expect("plugin tool missing from specs");
+        assert_eq!(echo.description, "echoes its input");
+        assert!(
+            specs.iter().any(|spec| spec.name == "shell"),
+            "builtins preserved"
+        );
+        assert_eq!(
+            specs
+                .iter()
+                .filter(|spec| spec.name == "fixture_echo")
+                .count(),
+            1,
+            "no duplicates"
+        );
+        let paths = devcode_util::paths("devcode");
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "fixture_echo".into(),
+            arguments: r#"{"text":"hello"}"#.into(),
+        };
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host);
+        assert_eq!(part["state"]["status"], "completed");
+        let content = part["state"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(content.contains("hello"), "echo output missing: {content}");
+        // builtin tools shadow same-named plugin tools and still take precedence,
+        // so a plugin cannot override shell/grep/etc.
+        let call = ToolCall {
+            id: "call_2".into(),
+            name: "shell".into(),
+            arguments: r#"{"command":"printf builtin-wins"}"#.into(),
+        };
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host);
+        assert_eq!(part["state"]["status"], "completed");
+        assert!(part["state"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("builtin-wins"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn row(row_type: &str, data: Value, parts: Vec<Value>) -> HistoryRow {
         HistoryRow {

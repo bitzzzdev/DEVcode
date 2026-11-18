@@ -312,6 +312,8 @@ version = "0.1.0-rust"
 dependencies = [
  "devcode-ai",
  "devcode-core",
+ "devcode-plugin",
+ "devcode-plugin-fixture",
  "devcode-tools",
  "devcode-util",
  "rusqlite",

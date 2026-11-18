@@ -53,6 +53,12 @@ pub trait Plugin: Send + Sync {
     fn tools(&self) -> Vec<PluginTool> {
         Vec::new()
     }
+    /// Execute one tool by name. Plugins that declare tools must implement this; the
+    /// default rejects every call so a tool-only plugin that forgets it fails loudly.
+    fn call_tool(&self, name: &str, input: &Value) -> Result<Value, String> {
+        let _ = input;
+        Err(format!("plugin reports no handler for tool {name}"))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,16 +70,16 @@ pub struct Manifest {
     pub library: String,
 }
 
-#[derive(Debug)]
 pub struct LoadedPlugin {
     pub info: PluginInfo,
     pub tools: Vec<PluginTool>,
     pub manifest_dir: PathBuf,
+    // the plugin object, leaked at load time so it outlives the mapped library
+    instance: &'static dyn Plugin,
     // keeps the library mapped; the plugin object points into it
     _library: libloading::Library,
 }
 
-#[derive(Debug)]
 pub struct Host {
     plugins: Vec<LoadedPlugin>,
 }
@@ -94,6 +100,17 @@ impl Host {
             .iter()
             .flat_map(|plugin| plugin.tools.clone())
             .collect()
+    }
+
+    /// Execute the plugin that declares `name`, if any. Returns `None` when no loaded
+    /// plugin provides the tool; builtin tool names take precedence in the caller.
+    pub fn call_tool(&self, name: &str, input: &Value) -> Option<Result<Value, String>> {
+        for plugin in &self.plugins {
+            if plugin.tools.iter().any(|tool| tool.name == name) {
+                return Some(plugin.instance.call_tool(name, input));
+            }
+        }
+        None
     }
 
     /// Read every `*/plugin.json` under `dir`. Malformed manifests are reported and skipped.
@@ -159,11 +176,13 @@ impl Host {
         }
         let tools = plugin.tools();
         // leak the plugin object; it must outlive the mapped library
-        let _leaked: &'static mut dyn Plugin = Box::leak(plugin);
+        let instance: &'static mut dyn Plugin = Box::leak(plugin);
+        let instance: &'static dyn Plugin = instance;
         self.plugins.push(LoadedPlugin {
             info: info.clone(),
             tools,
             manifest_dir: dir,
+            instance,
             _library: library,
         });
         Ok(info)
