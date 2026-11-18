@@ -1,6 +1,6 @@
 # Contributing to DevCode
 
-DEVcode is a private fork of [opencode](https://github.com/anomalyco/opencode). Changes come from the fork owner;
+DEVcode is a fork of [opencode](https://github.com/anomalyco/opencode). Changes come from the fork owner;
 upstream fixes still land upstream, and this fork re-syncs from there.
 
 New providers should rarely require DevCode changes. Add the provider to [models.dev](https://github.com/anomalyco/models.dev) first.

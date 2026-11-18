@@ -2,14 +2,12 @@
 # DEVcode installer/updater: detects the platform and installs (or updates)
 # the matching binary from the DEVcode GitLab release packages.
 #
-# The repository is private, so downloads need a gitlab.com token with
-# read_api (read_package_registry is included in read_api for generic
-# packages). Pass it via GITLAB_TOKEN, or glab's stored token is used
-# when glab is installed and logged in.
+# The repository is public, so downloads are anonymous. Set GITLAB_TOKEN
+# only if you want to fall back to a token (for example, if the repo is
+# private again).
 #
-# One-liner (fetch from the repo, run with the token in the environment):
-#   curl -fsSL -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-#     https://gitlab.com/bitzzdev/DEVcode/-/raw/dev/install.sh | sh -s --
+# One-liner (anonymous):
+#   curl -fsSL https://gitlab.com/bitzzdev/DEVcode/-/raw/dev/install.sh | sh -s --
 #
 # Usage: install.sh [version]     default: latest release
 set -eu
@@ -25,16 +23,16 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 
 TOKEN="${GITLAB_TOKEN:-}"
-if [ -z "$TOKEN" ] && command -v glab >/dev/null 2>&1; then
-  TOKEN=$(glab auth status --show-token 2>&1 | grep -o 'glpat-[A-Za-z0-9._-]*' | head -n1)
-fi
-if [ -z "$TOKEN" ]; then
-  printf 'GitLab token (read_api scope) for gitlab.com/bitzzdev/DEVcode: ' >&2
-  IFS= read -r TOKEN
-fi
-[ -n "$TOKEN" ] || die "a GitLab token is required to download from the private DEVcode repository"
 API="https://gitlab.com/api/v4/projects/$PROJECT_ID"
 AUTH="PRIVATE-TOKEN: $TOKEN"
+
+fetch() {
+  if [ -n "$TOKEN" ]; then
+    curl -fsS -H "$AUTH" "$@"
+  else
+    curl -fsS "$@"
+  fi
+}
 
 [ "$(uname -s)" = "Linux" ] || die "DEVcode publishes Linux builds only (detected: $(uname -s))"
 
@@ -61,7 +59,7 @@ TARGET="linux-$arch$baseline$libc"
 if [ "$#" -ge 1 ]; then
   VERSION="$1"
 else
-  VERSION=$(curl -fsS -H "$AUTH" "$API/releases?per_page=1" |
+  VERSION=$(fetch "$API/releases?per_page=1" |
     grep -o '"tag_name":"[^"]*"' | head -n1 | cut -d'"' -f4)
   [ -n "$VERSION" ] || die "no releases found under $API/releases"
 fi
@@ -71,9 +69,9 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 log "Downloading $BIN $VERSION ($TARGET)"
 url="$API/packages/generic/$GROUP/$VERSION/$BIN-$TARGET"
-curl -fsS -H "$AUTH" -o "$tmp/$BIN-$TARGET" "$url" ||
+fetch -o "$tmp/$BIN-$TARGET" "$url" ||
   { log "URL: $url"; die "download failed (is $VERSION published for $TARGET?)"; }
-curl -fsS -H "$AUTH" -o "$tmp/sha256sums.txt" "$API/packages/generic/$GROUP/$VERSION/sha256sums.txt" ||
+fetch -o "$tmp/sha256sums.txt" "$API/packages/generic/$GROUP/$VERSION/sha256sums.txt" ||
   die "checksum list missing for $VERSION"
 (cd "$tmp" && grep " $BIN-$TARGET\$" sha256sums.txt | sha256sum -c -) ||
   die "checksum mismatch for $BIN-$TARGET"

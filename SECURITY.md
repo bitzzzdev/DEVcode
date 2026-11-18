@@ -28,7 +28,7 @@ Server mode is opt-in only. When enabled, set `DEVCODE_SERVER_PASSWORD` to requi
 
 ## Reporting Security Issues
 
-This is a private fork; there is no upstream security team for this codebase, and upstream does not handle issues found here.
+This fork is maintained independently; there is no upstream security team for this codebase, and upstream does not handle issues found here.
 
 To report a security issue, open a confidential issue at
 [gitlab.com/bitzzdev/DEVcode](https://gitlab.com/bitzzdev/DEVcode) describing the vulnerability and how to reproduce it, and keep it private to you and the maintainer until it is resolved.

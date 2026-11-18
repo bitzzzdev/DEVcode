@@ -1,7 +1,8 @@
 # Credits
 
 DEVcode is a fork of [opencode](https://github.com/anomalyco/opencode), Copyright (c) 2025 opencode
-contributors, licensed under the MIT License (see [LICENSE](./LICENSE)).
+contributors, originally distributed under the MIT License. The fork is distributed under the XEH Product License
+(see [LICENSE](./LICENSE)), which keeps the upstream MIT notice for the inherited portions.
 
 The following third-party names and packages are kept unchanged from upstream and belong to their original
 authors; the fork does not claim them:

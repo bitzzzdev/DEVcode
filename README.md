@@ -44,11 +44,10 @@ Place the `DEVcode` binary on your `$PATH` and run `DEVcode` inside a project di
 ### Quick install (recommended)
 
 ```sh
-# Use a gitlab.com token with read_api scope (GITLAB_TOKEN env var, glab's
-# stored token, or an interactive prompt). The script detects the platform,
-# downloads the matching binary, verifies SHA-256, and installs it.
-curl -fsSL -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-  https://gitlab.com/bitzzdev/DEVcode/-/raw/dev/install.sh | sh -s -- v0.0.1
+# The repository is public, so downloads are anonymous. The script detects
+# the platform, downloads the matching binary, verifies SHA-256, and
+# installs it.
+curl -fsSL https://gitlab.com/bitzzdev/DEVcode/-/raw/dev/install.sh | sh -s -- v0.0.1
 ```
 
 ### Building from source
@@ -88,5 +87,6 @@ This is used internally and can be invoked using `@general` in messages.
 
 ## License
 
-MIT, as upstream. See [LICENSE](./LICENSE) and [CREDITS.md](./CREDITS.md) for third-party attributions that must
-be preserved.
+XEH Product License. See [LICENSE](./LICENSE). Portions of this repository are derived from upstream
+opencode (MIT); the upstream MIT copyright notice is preserved in that file. Third-party attributions are in
+[CREDITS.md](./CREDITS.md).
