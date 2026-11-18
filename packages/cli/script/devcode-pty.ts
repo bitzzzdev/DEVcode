@@ -32,7 +32,8 @@ export async function resolveDevcodePty(target: Target): Promise<DevcodePtyAsset
     throw new Error("DEVCODE_PTY_BIN can only be embedded in a build for the current platform and architecture")
   const source = local
     ? path.resolve(local)
-    : pty.resolve(`${name}/bin/${target.platform === "win32" ? "devcode-pty.exe" : "devcode-pty"}`)
+    : // The platform packages ship upstream's binary name; keep it verbatim.
+      pty.resolve(`${name}/bin/${target.platform === "win32" ? "opencode-pty.exe" : "opencode-pty"}`)
   const manifest: unknown = local
     ? { version: "local" }
     : JSON.parse(await readFile(pty.resolve(`${name}/package.json`), "utf8"))
