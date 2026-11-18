@@ -295,7 +295,7 @@ pub fn run_admitted(
     }
 }
 
-const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "glob", "grep", "shell"];
+const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "glob", "grep", "shell", "skill"];
 
 /// Load the user's native plugins for one run. Per-run `dlopen` is negligible; the
 /// alternative (a shared static host) would hold cdylib mappings for the process and
@@ -317,6 +317,19 @@ fn load_mcp_runtime(paths: &devcode_util::Paths) -> devcode_mcp::Runtime {
         }
     };
     devcode_mcp::Runtime::connect_all(&config.servers, std::time::Duration::from_secs(5))
+}
+
+/// Load embedded skills plus those under `<config>/skills/` for one run.
+fn load_skills(paths: &devcode_util::Paths) -> Vec<devcode_skills::Skill> {
+    devcode_skills::load(&paths.config, env!("CARGO_PKG_VERSION"))
+}
+
+/// System prompt for this run: the static head plus the available-skills section.
+fn system_prompt(skills: &[devcode_skills::Skill]) -> String {
+    format!(
+        "{SYSTEM_PROMPT}\n\n{}",
+        devcode_skills::available_skills_section(skills)
+    )
 }
 
 fn load_plugin_host(paths: &devcode_util::Paths) -> devcode_plugin::Host {
@@ -347,6 +360,8 @@ fn step_loop(
     plugins: &devcode_plugin::Host,
     mcp: &mut devcode_mcp::Runtime,
 ) -> Result<(), String> {
+    let skills = load_skills(paths);
+    let system = system_prompt(&skills);
     let model_json = model_json(model);
     let tools = tool_specs(plugins, mcp);
     let mut exhausted = true;
@@ -400,7 +415,7 @@ fn step_loop(
             };
             devcode_ai::stream_chat(
                 model,
-                Some(SYSTEM_PROMPT),
+                Some(system.as_str()),
                 &messages,
                 &tools,
                 8192,
@@ -420,7 +435,7 @@ fn step_loop(
                 call.arguments.lines().next().unwrap_or("").trim(),
             );
             parts.push(execute_tool(
-                paths, call, directory, session_id, plugins, mcp,
+                paths, call, directory, session_id, plugins, mcp, &skills,
             ));
         }
 
@@ -598,6 +613,17 @@ fn builtin_tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "skill".into(),
+            description: "Load a specialized skill's instructions and resources into the current conversation when the task at hand matches its description.\n\nThe skill ID must match an available skill or a skill explicitly referenced by the user.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The ID of an available skill or a skill explicitly referenced by the user" }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolSpec {
             name: "shell".into(),
             description: "Run a shell command (`sh -c`). Returns combined stdout/stderr. Default timeout 120s.".into(),
             input_schema: json!({
@@ -730,6 +756,7 @@ fn execute_tool(
     session_id: &str,
     plugins: &devcode_plugin::Host,
     mcp: &mut devcode_mcp::Runtime,
+    skills: &[devcode_skills::Skill],
 ) -> Value {
     let started = now_millis();
     let arguments: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
@@ -843,6 +870,16 @@ fn execute_tool(
                 .map_err(|error| error.to_string())
             })
         }
+        "skill" => arguments["id"]
+            .as_str()
+            .ok_or_else(|| "skill requires an id".to_string())
+            .and_then(|id| {
+                skills
+                    .iter()
+                    .find(|skill| skill.id == id)
+                    .map(devcode_skills::to_model_output)
+                    .ok_or_else(|| format!("unable to load skill {id}"))
+            }),
         other => {
             if let Some(result) = mcp.call(other, &arguments, std::time::Duration::from_secs(120)) {
                 result
@@ -953,7 +990,16 @@ mod tests {
             name: "fixture_echo".into(),
             arguments: r#"{"text":"hello"}"#.into(),
         };
-        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp);
+        let skills = load_skills(&paths);
+        let part = execute_tool(
+            &paths,
+            &call,
+            &dir,
+            "ses_test",
+            &host,
+            &mut empty_mcp,
+            &skills,
+        );
         assert_eq!(part["state"]["status"], "completed");
         let content = part["state"]["content"][0]["text"]
             .as_str()
@@ -967,7 +1013,16 @@ mod tests {
             name: "shell".into(),
             arguments: r#"{"command":"printf builtin-wins"}"#.into(),
         };
-        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp);
+        let skills = load_skills(&paths);
+        let part = execute_tool(
+            &paths,
+            &call,
+            &dir,
+            "ses_test",
+            &host,
+            &mut empty_mcp,
+            &skills,
+        );
         assert_eq!(part["state"]["status"], "completed");
         assert!(part["state"]["content"][0]["text"]
             .as_str()

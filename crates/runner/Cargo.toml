@@ -11,6 +11,7 @@ devcode-core = { path = "../core" }
 devcode-tools = { path = "../tools" }
 devcode-plugin = { path = "../plugin" }
 devcode-mcp = { path = "../mcp" }
+devcode-skills = { path = "../skills" }
 devcode-util = { path = "../util" }
 serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.43", features = ["bundled"] }

@@ -325,6 +325,7 @@ dependencies = [
  "devcode-mcp",
  "devcode-plugin",
  "devcode-plugin-fixture",
+ "devcode-skills",
  "devcode-tools",
  "devcode-util",
  "rusqlite",
@@ -341,6 +342,13 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "devcode-skills"
+version = "0.1.0-rust"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
