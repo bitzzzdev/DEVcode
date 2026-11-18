@@ -9,6 +9,7 @@ mod identifier;
 mod initial_schema;
 mod project;
 mod session;
+pub mod session_message;
 
 pub use db::{database_path, BootstrapError, Database};
 pub use event::{
