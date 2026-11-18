@@ -1,6 +1,60 @@
+XEH Product License
+
+Copyright (c) 2026 XEH. All rights reserved.
+
+This license covers every product released under the XEH organization,
+including their source code, binaries, artwork, and site assets.
+
+## 1. Free use for open source projects and portfolios
+
+You may use, run, and modify any XEH product for free and open source
+projects, personal projects, and portfolios at no cost. Credit is
+appreciated but not required. There is no contribution requirement for
+modified versions.
+
+## 2. Commercial use requires a paid license
+
+If you use a XEH product commercially, meaning any use intended to
+earn money, directly or indirectly, you must buy a license from XEH
+before such use. This includes company websites, client work, and any
+product or service used to generate revenue. The license is available as
+a one-time purchase or a periodic fee, as offered by XEH at the time of
+purchase. Without a paid commercial license, commercial use is not
+permitted.
+
+## 3. What you may not do
+
+- Remove or alter this license or copyright notices from the product or
+  its source.
+- Present a XEH product as your own work or imply that XEH endorses
+  you or your product.
+- Redistribute the product under terms that conflict with this
+  license.
+
+## 4. No warranty
+
+XEH products are provided as is, without warranty of any kind. XEH is
+not liable for any damages arising from their use.
+
+## 5. Contact
+
+Licensing questions and commercial license purchases: contact.xeh@gmail.com
+or through the organization site.
+
+Unless a separate written agreement with XEH says otherwise, these
+terms apply to every product released under XEH.
+
+---
+
+## Historical notice: MIT license (upstream opencode)
+
+Portions of this repository are derived from opencode
+(https://gitlab.com/bitzzdev/DEVcode, originally anomalyco/opencode), which is
+distributed under the MIT license:
+
 MIT License
 
-Copyright (c) 2025 devcode
+Copyright (c) 2025 opencode
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

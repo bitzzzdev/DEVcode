@@ -3,7 +3,7 @@
   "version": "0.6.0",
   "description": "Persistent PTY service for DevCode",
   "type": "module",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "git+https://gitlab.com/bitzzdev/DEVcode.git",

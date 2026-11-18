@@ -3,7 +3,7 @@
   "name": "@devcode/plugin",
   "version": "2.3.0",
   "type": "module",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "test": "bun test --only-failures",
     "typecheck": "bun check --no-script",

@@ -94,7 +94,7 @@
     "type": "git",
     "url": "https://gitlab.com/bitzzdev/DEVcode.git"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "prettier": {
     "semi": false,
     "printWidth": 120
