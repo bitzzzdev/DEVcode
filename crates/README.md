@@ -19,6 +19,7 @@ State directories are XDG-rooted like the Bun build (`XDG_CONFIG_HOME/devcode`, 
 - `/api/info` (basic auth, user `devcode`) and a minimal `/openapi.json`
 - `devcode-service`: managed-service config read/write (unknown keys round-trip), atomic 0600 registration file, default ports (`latest`/`dev`/`beta`/`next` 0xc0e0/49376, `local` 0xc0e1/49377, win32 0x70e0/0x70e1), `/api/info` health probe, constant-time password compare
 - `devcode-util`: XDG path resolution (same `DEVCODE_CONFIG_DIR`/`DEVCODE_TEST_HOME` overrides as the Bun build)
+- `devcode-core`: SQLite storage (`devcode.db`, 0600, WAL, foreign keys). Fresh databases get the full initial schema verbatim from `packages/core/src/database/schema.gen.ts` and record the 62 legacy Drizzle migration ids so the Bun build never replays them. Existing Bun-created databases are opened without touching their schema. `serve` opens the database at startup like the Bun build does. Durable per-aggregate event log (`append_durable`, `read_log`, `reserve_sequence`) mirrors `packages/core/src/bus.ts` storage semantics: sequences start at 0, `event_sequence` keeps max, `event` rows cascade on aggregate delete.
 
 ## Deliberate deviations
 
@@ -28,4 +29,4 @@ State directories are XDG-rooted like the Bun build (`XDG_CONFIG_HOME/devcode`, 
 
 ## Not ported yet
 
-Everything else: the TUI (solid-js/opentui, to become ratatui), the full server and session core, tools (shell, file, patch, grep), MCP, LSP, providers, the JavaScript plugin host (to become native Rust plugins), `process-daemon` (already Rust), `sdk`/`protocol` codegen. See .progress.md (gitignored) for the working ledger.
+TUI (solid-js/opentui, to become ratatui), the full server and session core (projectors, runner, compaction, inbox wiring), tools (shell, file, patch, grep), MCP, LSP, providers, the JavaScript plugin host (to become native Rust plugins), `process-daemon` (already Rust), `sdk`/`protocol` codegen. See .progress.md (gitignored) for the working ledger.

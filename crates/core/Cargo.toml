@@ -1,0 +1,16 @@
+[package]
+name = "devcode-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "devcode_core"
+path = "src/lib.rs"
+
+[dependencies]
+devcode-util = { path = "../util" }
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+getrandom = "0.2"

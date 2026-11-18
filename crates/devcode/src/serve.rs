@@ -51,6 +51,17 @@ pub fn run(args: &[String]) -> ExitCode {
         password: password.clone(),
     };
 
+    // The Bun build opens (and bootstraps) the SQLite database at startup; do the same so
+    // the managed service owns its storage file from the first connection.
+    let database_path = devcode_core::database_path(&paths);
+    if let Err(error) = devcode_core::Database::open(&database_path) {
+        eprintln!(
+            "failed to open database {}: {error}",
+            database_path.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
     let addr = format!("{hostname}:{port}");
     let server = match Server::http(&addr) {
         Ok(server) => server,

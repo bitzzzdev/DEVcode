@@ -2,7 +2,7 @@
 # Mirrors the package layout of the TypeScript build (packages/*) as crates/*.
 [workspace]
 resolver = "2"
-members = ["util", "service", "devcode"]
+members = ["util", "service", "core", "devcode"]
 
 [workspace.package]
 version = "0.1.0-rust"
