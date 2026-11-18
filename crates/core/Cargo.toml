@@ -14,3 +14,4 @@ devcode-util = { path = "../util" }
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 getrandom = "0.2"
+sha1 = "0.10"
