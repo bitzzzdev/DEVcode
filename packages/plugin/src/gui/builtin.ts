@@ -171,7 +171,6 @@ export type BuiltinStoreFrom =
        *   or undefined.
        */
       // SAFETY: the older value is stored JSON with no schema of its own; the store decodes what pick returns.
-      // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- see SAFETY above
       pick(value: unknown): unknown
     }
 

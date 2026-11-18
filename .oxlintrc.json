@@ -1,9 +1,5 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicolo-ribaudo/oxc-project.github.io/refs/heads/json-schema/src/public/.oxlintrc.schema.json",
-  "jsPlugins": [
-    { "name": "anti-slop", "specifier": "./script/oxlint/anti-slop/index.ts" },
-    { "name": "anti-slop-effect", "specifier": "./script/oxlint/anti-slop/effect/index.ts" }
-  ],
   "categories": {
     "correctness": "off",
     "suspicious": "off",
@@ -24,7 +20,9 @@
   },
   "overrides": [
     {
-      "files": ["packages/ai/src/**"],
+      "files": [
+        "packages/ai/src/**"
+      ],
       "rules": {
         "no-restricted-globals": [
           "error",
@@ -43,7 +41,10 @@
             "paths": [
               {
                 "name": "effect/http",
-                "importNames": ["HttpClient", "FetchHttpClient"],
+                "importNames": [
+                  "HttpClient",
+                  "FetchHttpClient"
+                ],
                 "message": "Send HTTP through RequestExecutor, which applies executor-wide and scoped middleware (HTTP hooks). Only route/executor.ts holds the HTTP client."
               }
             ]
@@ -52,7 +53,9 @@
       }
     },
     {
-      "files": ["packages/ai/src/route/executor.ts"],
+      "files": [
+        "packages/ai/src/route/executor.ts"
+      ],
       "rules": {
         "no-restricted-imports": "off"
       }
@@ -63,41 +66,13 @@
         "packages/ui/**"
       ],
       "rules": {
-        "oxc/no-accumulating-spread": "warn",
-        "anti-slop/no-array-filter-map": "warn",
-        "anti-slop/no-reduce-accumulator-copy": "warn",
-        "anti-slop/no-chained-type-assertions": "warn",
-        "anti-slop/no-conditional-empty-object-spread": "warn",
-        "anti-slop/no-known-value-widening": "warn",
-        "anti-slop/no-module-mocking": "warn",
-        "anti-slop/no-object-parameters": "warn",
-        "anti-slop/no-reflect-apply": "warn",
-        "anti-slop/no-reflect-get": "warn",
-        "anti-slop/no-runtime-typeof": "warn",
-        "anti-slop/no-shape-in-symbol-names": "warn",
-        "anti-slop/no-unknown-parameters": "warn",
-        "anti-slop/no-unknown-returns": "warn",
-        "anti-slop/no-unknown-type-aliases": "warn",
-        "anti-slop/no-unsafe-dictionary-type": "warn",
-        "anti-slop/no-widen-then-assert": "warn",
-        "anti-slop/require-readable-spacing": "warn",
-        "anti-slop/require-safety-comment-for-type-assertion": "warn"
+        "oxc/no-accumulating-spread": "warn"
       }
     },
     {
       "files": [
         "packages/plugin/src/gui/**"
       ],
-      "rules": {
-        "anti-slop-effect/no-manual-effect-error-tag": "warn",
-        "anti-slop-effect/no-manual-tag-comparison": "warn",
-        "anti-slop-effect/no-manual-tagged-construction": "warn",
-        "anti-slop-effect/no-service-constructor-imports": "warn",
-        "anti-slop-effect/prefer-effect-match": "warn"
-      }
-    },
-    {
-      "files": ["packages/plugin/src/gui/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -113,7 +88,10 @@
       }
     },
     {
-      "files": ["packages/codemode/src/interpreter/**", "packages/codemode/src/stdlib/**"],
+      "files": [
+        "packages/codemode/src/interpreter/**",
+        "packages/codemode/src/stdlib/**"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -158,7 +136,6 @@
     ".devcode/**",
     ".pi/**",
     ".roo/**",
-    ".windsurf/**",
-    "script/oxlint/anti-slop/**"
+    ".windsurf/**"
   ]
 }

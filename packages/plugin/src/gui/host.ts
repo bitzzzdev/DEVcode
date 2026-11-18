@@ -495,7 +495,6 @@ export interface Bridge {
    * @returns The encoded output.
    */
   // SAFETY: the reply is the method's output as its schema encoded it; the renderer host decodes it with that schema.
-  /* oxlint-disable anti-slop/no-unknown-returns -- see SAFETY above */
   call(
     input: {
       /** The Ipc's id. */
@@ -507,7 +506,6 @@ export interface Bridge {
     },
     signal?: AbortSignal,
   ): Promise<unknown>
-  /* oxlint-enable anti-slop/no-unknown-returns */
   /**
    * Starts state sync for this window. Resolves with the current availability and state.
    *
