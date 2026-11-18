@@ -289,6 +289,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "devcode-mcp"
+version = "0.1.0-rust"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "ureq",
+]
+
+[[package]]
 name = "devcode-plugin"
 version = "0.1.0-rust"
 dependencies = [
@@ -312,6 +322,7 @@ version = "0.1.0-rust"
 dependencies = [
  "devcode-ai",
  "devcode-core",
+ "devcode-mcp",
  "devcode-plugin",
  "devcode-plugin-fixture",
  "devcode-tools",

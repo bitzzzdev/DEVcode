@@ -1,0 +1,156 @@
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::time::Duration;
+
+use devcode_mcp::{
+    load_config, namespaced_tool_name, strip_jsonc, Connection, McpConfig, ServerConfig,
+};
+
+fn fixture_path() -> String {
+    env!("CARGO_BIN_EXE_mcp_fixture").to_owned()
+}
+
+#[test]
+fn stdio_handshake_tools_list_and_call() {
+    let config = ServerConfig::Local(devcode_mcp::LocalConfig {
+        command: vec![fixture_path()],
+        cwd: None,
+        environment: BTreeMap::new(),
+        disabled: false,
+    });
+    let timeout = Duration::from_secs(5);
+    let mut connection = Connection::connect("fixture", &config, timeout).expect("connect");
+    let tools = connection.list_tools(timeout).expect("list tools");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "echo");
+    let result = connection
+        .call_tool("echo", &serde_json::json!({ "text": "hello" }), timeout)
+        .expect("call tool");
+    assert!(result.contains("hello"), "unexpected tool output: {result}");
+}
+
+#[test]
+fn jsonc_stripping_keeps_strings_and_drops_comments() {
+    let input = r#"{
+        // line comment
+        "mcp": { "servers": { "a": { "type": "local", "command": ["x"] } } }, // trailing
+        /* block
+           comment */
+        "url": "http://example.com//not-a-comment"
+    }"#;
+    let stripped = strip_jsonc(input);
+    assert!(stripped.contains("http://example.com//not-a-comment"));
+    assert!(!stripped.contains("line comment"));
+    let value: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(value["mcp"]["servers"]["a"]["type"], "local");
+}
+
+#[test]
+fn load_config_reads_local_and_remote_and_disabled() {
+    let dir = std::env::temp_dir().join(format!("devcode-mcp-config-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("devcode.jsonc");
+    std::fs::write(
+        &path,
+        r#"{
+        "mcp": { "servers": {
+            "fs": { "type": "local", "command": ["server-fs"], "disabled": false },
+            "remote": { "type": "remote", "url": "https://example.com/mcp", "headers": { "x-key": "v" } },
+            "oauth": { "type": "remote", "url": "https://example.com/mcp", "oauth": {} },
+            "off": { "type": "local", "command": ["x"], "disabled": true }
+        } }
+    }"#,
+    )
+    .unwrap();
+    let config: McpConfig = load_config(&path).unwrap();
+    assert_eq!(config.servers.len(), 4);
+    match &config.servers["fs"] {
+        ServerConfig::Local(local) => assert_eq!(local.command, vec!["server-fs"]),
+        _ => panic!("fs should be local"),
+    }
+    match &config.servers["remote"] {
+        ServerConfig::Remote(remote) => {
+            assert_eq!(remote.url, "https://example.com/mcp");
+            assert!(!remote.needs_oauth);
+            assert_eq!(remote.headers["x-key"], "v");
+        }
+        _ => panic!("remote should be remote"),
+    }
+    match &config.servers["oauth"] {
+        ServerConfig::Remote(remote) => assert!(remote.needs_oauth),
+        _ => panic!("oauth should be remote"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tool_name_namespacing() {
+    assert_eq!(namespaced_tool_name("figma", "whoami"), "figma_whoami");
+    assert_eq!(namespaced_tool_name("my.server", "a b"), "my_server_a_b");
+}
+
+#[test]
+fn http_handshake_and_call() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let server = tiny_http::Server::from_listener(listener, None).unwrap();
+        for mut request in server.incoming_requests() {
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            let message: serde_json::Value = serde_json::from_str(&body).unwrap();
+            if message.get("method").and_then(|m| m.as_str()) == Some("notifications/initialized") {
+                let _ = request.respond(tiny_http::Response::empty(202));
+                continue;
+            }
+            let id = message
+                .get("id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let method = message["method"].as_str().unwrap_or("");
+            let result = match method {
+                "initialize" => serde_json::json!({
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "fixture", "version": "0.0.0" },
+                }),
+                "tools/list" => serde_json::json!({
+                    "tools": [{ "name": "ping", "description": "ping", "inputSchema": { "type": "object" } }],
+                }),
+                "tools/call" => serde_json::json!({
+                    "content": [{ "type": "text", "text": "pong" }],
+                }),
+                _ => serde_json::json!({}),
+            };
+            let response_body =
+                serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+            let mut response = tiny_http::Response::from_string(response_body);
+            response.add_header(
+                tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..])
+                    .unwrap(),
+            );
+            response.add_header(
+                tiny_http::Header::from_bytes(&b"mcp-session-id"[..], &b"session-1"[..]).unwrap(),
+            );
+            let _ = request.respond(response);
+        }
+    });
+    // let the server thread start
+    std::thread::sleep(Duration::from_millis(100));
+    let config = ServerConfig::Remote(devcode_mcp::RemoteConfig {
+        url: url.clone(),
+        headers: BTreeMap::new(),
+        needs_oauth: false,
+        disabled: false,
+    });
+    let timeout = Duration::from_secs(5);
+    let mut connection = Connection::connect("remote", &config, timeout).expect("connect");
+    let tools = connection.list_tools(timeout).expect("list tools");
+    assert_eq!(tools[0].name, "ping");
+    let result = connection
+        .call_tool("ping", &serde_json::json!({}), timeout)
+        .expect("call");
+    assert_eq!(result, "pong");
+    drop(connection);
+    drop(handle);
+}

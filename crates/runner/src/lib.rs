@@ -184,6 +184,7 @@ pub fn execute(
     )?;
 
     let plugins = load_plugin_host(paths);
+    let mut mcp = load_mcp_runtime(paths);
     let outcome = step_loop(
         conn,
         paths,
@@ -194,6 +195,7 @@ pub fn execute(
         on_tool,
         &session_id,
         &plugins,
+        &mut mcp,
     );
     let finished = now_millis();
     match outcome {
@@ -258,8 +260,9 @@ pub fn run_admitted(
         started,
     )?;
     let plugins = load_plugin_host(paths);
+    let mut mcp = load_mcp_runtime(paths);
     let outcome = step_loop(
-        conn, paths, model, &directory, max_steps, on_text, on_tool, session_id, &plugins,
+        conn, paths, model, &directory, max_steps, on_text, on_tool, session_id, &plugins, &mut mcp,
     );
     let finished = now_millis();
     match outcome {
@@ -298,6 +301,24 @@ const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "glob", "grep", "
 /// alternative (a shared static host) would hold cdylib mappings for the process and
 /// complicate reload semantics on the service. Load failures print to stderr and do
 /// not abort the run.
+/// Connect to every MCP server enabled in `<config>/devcode.jsonc` (`mcp.servers`,
+/// same format the Bun build reads). Per-run connections; unreachable servers are
+/// reported on stderr and skipped.
+fn load_mcp_runtime(paths: &devcode_util::Paths) -> devcode_mcp::Runtime {
+    let config_path = paths.config.join("devcode.jsonc");
+    let config = match devcode_mcp::load_config(&config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{error}");
+            return devcode_mcp::Runtime::connect_all(
+                &Default::default(),
+                std::time::Duration::from_secs(5),
+            );
+        }
+    };
+    devcode_mcp::Runtime::connect_all(&config.servers, std::time::Duration::from_secs(5))
+}
+
 fn load_plugin_host(paths: &devcode_util::Paths) -> devcode_plugin::Host {
     let dir = paths.config.join("plugins");
     let mut host = devcode_plugin::Host::empty();
@@ -324,9 +345,10 @@ fn step_loop(
     on_tool: &mut dyn FnMut(&str, &str),
     session_id: &str,
     plugins: &devcode_plugin::Host,
+    mcp: &mut devcode_mcp::Runtime,
 ) -> Result<(), String> {
     let model_json = model_json(model);
-    let tools = tool_specs(plugins);
+    let tools = tool_specs(plugins, mcp);
     let mut exhausted = true;
     for _step in 0..max_steps {
         let rows = devcode_core::session_message::history(conn, session_id)
@@ -397,7 +419,9 @@ fn step_loop(
                 &call.name,
                 call.arguments.lines().next().unwrap_or("").trim(),
             );
-            parts.push(execute_tool(paths, call, directory, session_id, plugins));
+            parts.push(execute_tool(
+                paths, call, directory, session_id, plugins, mcp,
+            ));
         }
 
         emit(
@@ -469,19 +493,34 @@ fn now_millis() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-fn tool_specs(plugins: &devcode_plugin::Host) -> Vec<ToolSpec> {
-    let builtins = builtin_tool_specs();
-    let mut specs = builtins;
-    // Plugin tools shadowing a builtin name are dropped: the builtin would win at
-    // execution time anyway, and offering both would confuse the model.
+fn tool_specs(plugins: &devcode_plugin::Host, mcp: &devcode_mcp::Runtime) -> Vec<ToolSpec> {
+    let mut specs = builtin_tool_specs();
+    // Plugin and MCP tools shadowing a builtin (or each other, MCP wins) are dropped:
+    // first-seen wins for the model, and the router below enforces the same order.
+    let mut taken: Vec<String> = BUILTIN_TOOL_NAMES
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
     for plugin in plugins.tool_specs() {
-        if BUILTIN_TOOL_NAMES.contains(&plugin.name.as_str()) {
+        if taken.contains(&plugin.name) {
             continue;
         }
+        taken.push(plugin.name.clone());
         specs.push(ToolSpec {
             name: plugin.name,
             description: plugin.description,
             input_schema: plugin.input_schema,
+        });
+    }
+    for tool in &mcp.tools {
+        if taken.contains(&tool.namespaced) {
+            continue;
+        }
+        taken.push(tool.namespaced.clone());
+        specs.push(ToolSpec {
+            name: tool.namespaced.clone(),
+            description: format!("[MCP:{}] {}", tool.server, tool.tool.description),
+            input_schema: tool.tool.input_schema.clone(),
         });
     }
     specs
@@ -690,6 +729,7 @@ fn execute_tool(
     workdir: &std::path::Path,
     session_id: &str,
     plugins: &devcode_plugin::Host,
+    mcp: &mut devcode_mcp::Runtime,
 ) -> Value {
     let started = now_millis();
     let arguments: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
@@ -803,11 +843,15 @@ fn execute_tool(
                 .map_err(|error| error.to_string())
             })
         }
-        other => match plugins.call_tool(other, &arguments) {
-            Some(Ok(value)) => Ok(value.to_string()),
-            Some(Err(message)) => Err(message),
-            None => Err(format!("unknown tool: {other}")),
-        },
+        other => {
+            if let Some(result) = mcp.call(other, &arguments, std::time::Duration::from_secs(120)) {
+                result
+            } else if let Some(result) = plugins.call_tool(other, &arguments) {
+                result.map(|value| value.to_string())
+            } else {
+                Err(format!("unknown tool: {other}"))
+            }
+        }
     };
     let finished = now_millis();
     match result {
@@ -881,7 +925,11 @@ mod tests {
     #[test]
     fn plugin_tools_appear_in_specs_and_route_execution() {
         let (host, dir) = fixture_plugin_host("9c");
-        let specs = tool_specs(&host);
+        let mut empty_mcp = devcode_mcp::Runtime::connect_all(
+            &std::collections::BTreeMap::new(),
+            std::time::Duration::from_millis(10),
+        );
+        let specs = tool_specs(&host, &empty_mcp);
         let echo = specs
             .iter()
             .find(|spec| spec.name == "fixture_echo")
@@ -905,7 +953,7 @@ mod tests {
             name: "fixture_echo".into(),
             arguments: r#"{"text":"hello"}"#.into(),
         };
-        let part = execute_tool(&paths, &call, &dir, "ses_test", &host);
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp);
         assert_eq!(part["state"]["status"], "completed");
         let content = part["state"]["content"][0]["text"]
             .as_str()
@@ -919,7 +967,7 @@ mod tests {
             name: "shell".into(),
             arguments: r#"{"command":"printf builtin-wins"}"#.into(),
         };
-        let part = execute_tool(&paths, &call, &dir, "ses_test", &host);
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp);
         assert_eq!(part["state"]["status"], "completed");
         assert!(part["state"]["content"][0]["text"]
             .as_str()
