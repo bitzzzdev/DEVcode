@@ -9,6 +9,9 @@ Release notes for DevCode V2, newest first.
 
 ## Unreleased (DEVcode fork)
 
+- First fork release v0.0.1 (`gitlab.com/bitzzdev/DEVcode/-/releases`): six Linux binaries built by CircleCI from `dev` @ `bed6586` — `DEVcode-linux-x64`, `-x64-baseline`, `-x64-musl`, `-x64-baseline-musl`, `-arm64`, `-arm64-musl` — plus `install.sh`, all attached to the GitLab release assets.
+- Added `install.sh` (`d1c0509`): detects the platform (Linux x64/arm64, musl/glibc, AVX2/no-AVX2), downloads the matching `DEVcode` binary from the GitLab packages for the release, verifies it against `sha256sums.txt`, installs to `~/.local/bin/DEVcode` or updates an existing `DEVcode` on `PATH` in place. Requires a gitlab.com token with `read_api` because the repository is private.
+- Build pipeline: CircleCI builds all six targets on every push to `dev` (`circleci/Etn9rWXPxmXMFZnzhWxtAv/Hc3UoswXD8cMTRYWBux3tP`) and uploads each as build artifacts.
 - Forked from upstream opencode (revision 12d2997, branch `dev`): the repository moved to private GitLab
   (`bitzzdev/DEVcode`), the product and binary are `DEVcode`, wire protocol headers are `x-devcode-*`, the local
   database is `devcode.db`, tools are named `tools.devcode.*`, and the config directory is `.devcode`.

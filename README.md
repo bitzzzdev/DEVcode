@@ -41,6 +41,16 @@ uploads `packages/cli/dist/DEVcode-<target>`; download the artifact for your pla
 
 Place the `DEVcode` binary on your `$PATH` and run `DEVcode` inside a project directory.
 
+### Quick install (recommended)
+
+```sh
+# Use a gitlab.com token with read_api scope (GITLAB_TOKEN env var, glab's
+# stored token, or an interactive prompt). The script detects the platform,
+# downloads the matching binary, verifies SHA-256, and installs it.
+curl -fsSL -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  https://gitlab.com/bitzzdev/DEVcode/-/raw/dev/install.sh | sh -s -- v0.0.1
+```
+
 ### Building from source
 
 Requires [Bun](https://bun.sh) 1.4.4.
