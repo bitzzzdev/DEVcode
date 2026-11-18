@@ -16,6 +16,48 @@ use tiny_http::{Header, Request, Response, Server, StatusCode};
 static RUNNING: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 
+/// Plugin listings in the Bun `Plugin.Info` wire shape, loaded once at service startup
+/// from `<config>/plugins/*/plugin.json` (native Rust cdylib plugins).
+static PLUGIN_LIST: std::sync::OnceLock<Vec<serde_json::Value>> = std::sync::OnceLock::new();
+
+fn plugin_list() -> &'static [serde_json::Value] {
+    PLUGIN_LIST.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+fn load_plugins(paths: &devcode_util::Paths) -> Vec<serde_json::Value> {
+    let dir = paths.config.join("plugins");
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    let mut host = devcode_plugin::Host::empty();
+    // Native code from the user's own plugins directory, same trust level as the
+    // Bun build's JS plugins from the same location.
+    let (_loaded, errors) = unsafe { host.load_dir(&dir) };
+    for error in &errors {
+        eprintln!("plugin failed to load: {error}");
+    }
+    let infos = host.list();
+    infos
+        .iter()
+        .map(|plugin| {
+            json!({
+                "id": plugin.info.id,
+                "source": { "type": "local", "path": plugin.manifest_dir.to_string_lossy() },
+                "features": { "server": true },
+                "state": { "status": "active" },
+            })
+        })
+        .chain(errors.iter().map(|error| {
+            json!({
+                "id": serde_json::Value::Null,
+                "source": { "type": "local", "path": dir.to_string_lossy() },
+                "features": { "server": true },
+                "state": { "status": "failed", "error": error },
+            })
+        }))
+        .collect()
+}
+
 fn running_insert(session_id: &str) -> bool {
     let mut set = RUNNING
         .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
@@ -88,6 +130,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let _ = PLUGIN_LIST.set(load_plugins(&paths));
 
     let addr = format!("{hostname}:{port}");
     let server = match Server::http(&addr) {
@@ -1064,6 +1107,7 @@ fn route(
         ("PATCH", ["api", "session", id]) => update_session(id, body, conn, now),
         ("POST", ["api", "session", id, "prompt"]) => prompt_session(id, body, conn, now),
         ("GET", ["api", "session", id, "message"]) => list_messages(id, &params, conn),
+        ("GET", ["api", "plugin"]) => (200, Some(json!({ "data": plugin_list() }))),
         _ => (404, Some(json!({"message": "Not Found"}))),
     }
 }
@@ -1145,6 +1189,14 @@ fn openapi() -> serde_json::Value {
                     "tags": ["session"],
                     "summary": "Delete session",
                     "responses": { "204": { "description": "Deleted" } },
+                },
+            },
+            "/api/plugin": {
+                "get": {
+                    "tags": ["plugin"],
+                    "summary": "List plugins",
+                    "description": "Enabled server plugins and their current status. Native Rust plugins only.",
+                    "responses": { "200": { "description": "Enabled plugins" } },
                 },
             },
             "/api/session/{sessionID}/prompt": {
@@ -1541,6 +1593,15 @@ mod tests {
         if let Some(value) = previous_model {
             std::env::set_var("DEVCODE_MODEL", value);
         }
+    }
+
+    #[test]
+    fn plugin_list_endpoint_responds() {
+        let mut t = temp_db("plugin-list");
+        let c = &mut t.db.conn;
+        let (status, body) = call(c, "GET", "/api/plugin", "", "", 1000);
+        assert_eq!(status, 200);
+        assert!(body.unwrap()["data"].is_array());
     }
 
     #[test]

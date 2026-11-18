@@ -257,6 +257,7 @@ dependencies = [
  "ctrlc",
  "devcode-ai",
  "devcode-core",
+ "devcode-plugin",
  "devcode-runner",
  "devcode-service",
  "devcode-tools",

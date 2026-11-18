@@ -18,6 +18,7 @@ devcode-ai = { path = "../ai" }
 devcode-tools = { path = "../tools" }
 devcode-runner = { path = "../runner" }
 devcode-tui = { path = "../tui" }
+devcode-plugin = { path = "../plugin" }
 serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
 tiny_http = "0.12"
