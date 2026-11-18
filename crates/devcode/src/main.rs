@@ -21,10 +21,11 @@ fn main() -> ExitCode {
         }
         Some("serve") => serve::run(&args[1..]),
         Some("run") => run::run(&args[1..]),
+        Some("tui") => devcode_tui::run(),
         Some("service") => service_cmd::run(&args[1..]),
         Some(other) => {
             eprintln!("unknown command: {other}");
-            eprintln!("the rust build currently supports: serve, service, run, --version");
+            eprintln!("the rust build currently supports: serve, service, run, tui, --version");
             eprintln!(
                 "use the bun build (DEVcode 0.0.1, all commands/features) until the port lands"
             );
@@ -44,5 +45,6 @@ fn print_help() {
     println!("  DEVcode serve [--service]");
     println!("  DEVcode service <status|start|stop|restart|get|set|unset> ...");
     println!("  DEVcode run [--model provider/model[#variant]] [--session ID] [--workdir PATH] [--max-steps N] <prompt>");
+    println!("  DEVcode tui");
     println!("  DEVcode --version");
 }

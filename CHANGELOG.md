@@ -9,6 +9,7 @@ Release notes for DevCode V2, newest first.
 
 ## Unreleased (Rust port, branch `rust-port`)
 
+- Rust: `DEVcode tui` launches a ratatui front-end (sidebar session list, transcript, prompt input, status bar) `DEVcode tui` auto-starts the managed service when it is not running. Conversations stream via `POST /api/session/:sessionID/prompt` and poll the message list until the agent loop finishes. MVP: no theme port, no sidebar plugins, no attachments.
 - Rust: `POST /api/session/:sessionID/prompt` accepts a prompt over HTTP (same payload shape as the Bun `session.prompt` endpoint: `text`, `id`, `delivery`, `resume`, optional `model` and `files`/`agents`/`skills`/`metadata` passthrough). The prompt is admitted synchronously as a durable inbox item; with `resume` (default) the agent loop runs in a background thread against the service database. Returns 200 `{data}` with the admitted `SessionInbox.User` item; 400 on invalid payloads; 404 for an unknown session; 409 when a run is already in flight in this process. The agent loop now lives in a shared `devcode-runner` crate used by both `DEVcode run` and the HTTP endpoint.
 
 - Rust port of the TypeScript build began on branch `rust-port`. Version `0.1.0-rust`; every Rust build version carries `rust`. The Bun build ships unchanged as 0.0.1 and stays the supported binary until the port reaches parity.
