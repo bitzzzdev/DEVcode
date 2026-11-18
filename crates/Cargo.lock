@@ -163,6 +163,7 @@ dependencies = [
  "ctrlc",
  "devcode-ai",
  "devcode-core",
+ "devcode-runner",
  "devcode-service",
  "devcode-tools",
  "devcode-util",
@@ -189,6 +190,18 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "sha1",
+]
+
+[[package]]
+name = "devcode-runner"
+version = "0.1.0-rust"
+dependencies = [
+ "devcode-ai",
+ "devcode-core",
+ "devcode-tools",
+ "devcode-util",
+ "rusqlite",
+ "serde_json",
 ]
 
 [[package]]

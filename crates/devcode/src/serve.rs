@@ -10,6 +10,30 @@ use devcode_service as svc;
 use serde_json::json;
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
+/// Sessions with an agent loop running in this process. Prompting a busy session
+/// returns 409 instead of interleaving two runs over one history (the Bun build
+/// serializes on its execution coordinator).
+static RUNNING: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn running_insert(session_id: &str) -> bool {
+    let mut set = RUNNING
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    set.insert(session_id.to_owned())
+}
+
+fn running_remove(session_id: &str) {
+    let Ok(mut set) = RUNNING
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+    else {
+        return;
+    };
+    set.remove(session_id);
+}
+
 pub fn run(args: &[String]) -> ExitCode {
     let service_mode = args.iter().any(|arg| arg == "--service");
     let paths = devcode_util::paths("devcode");
@@ -755,6 +779,153 @@ fn update_session(
     (204, None)
 }
 
+fn prompt_session(
+    id: &str,
+    body: &[u8],
+    conn: &mut rusqlite::Connection,
+    _now: i64,
+) -> (u16, Option<serde_json::Value>) {
+    if !id.starts_with("ses") {
+        return error(400, "InvalidRequestError", "Invalid session id");
+    }
+    let body = match json_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let text = match body.get("text").and_then(serde_json::Value::as_str) {
+        Some(text) if !text.is_empty() => text.to_owned(),
+        Some(_) => return error(400, "InvalidRequestError", "text must be non-empty"),
+        None => return error(400, "InvalidRequestError", "text is required"),
+    };
+    let explicit_id = match optional_string(&body, "id") {
+        Ok(Some(message_id)) if !message_id.starts_with("msg") => {
+            return error(400, "InvalidRequestError", "id must be a message id")
+        }
+        Ok(message_id) => message_id,
+        Err(response) => return response,
+    };
+    let delivery = match optional_string(&body, "delivery") {
+        Ok(None) => "steer".to_owned(),
+        Ok(Some(delivery)) if delivery == "steer" || delivery == "queue" => delivery,
+        Ok(Some(_)) => {
+            return error(
+                400,
+                "InvalidRequestError",
+                "delivery must be \"steer\" or \"queue\"",
+            )
+        }
+        Err(response) => return response,
+    };
+    let resume = match body.get("resume") {
+        None => true,
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(_) => return error(400, "InvalidRequestError", "resume must be a boolean"),
+    };
+    let model_raw = match optional_string(&body, "model") {
+        Ok(Some(model)) => Some(model),
+        Ok(None) => std::env::var("DEVCODE_MODEL")
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
+        Err(response) => return response,
+    };
+    let model = match model_raw.as_deref() {
+        Some(raw) => match devcode_ai::parse_model(raw) {
+            Ok(model) => Some(model),
+            Err(message) => return error(400, "InvalidRequestError", &message),
+        },
+        None => None,
+    };
+    let mut extra = serde_json::Map::new();
+    for key in ["files", "agents", "skills", "metadata"] {
+        if let Some(value) = body.get(key) {
+            let valid = if key == "metadata" {
+                value.is_object()
+            } else {
+                value.is_array()
+            };
+            if !valid {
+                let want = if key == "metadata" {
+                    "an object"
+                } else {
+                    "an array"
+                };
+                return error(400, "InvalidRequestError", &format!("{key} must be {want}"));
+            }
+            extra.insert(key.to_owned(), value.clone());
+        }
+    }
+    match devcode_core::session_api::get_info(conn, id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(id),
+        Err(err) => {
+            return error(
+                500,
+                "UnknownError",
+                &format!("Failed to read session: {err}"),
+            )
+        }
+    }
+    let extra = serde_json::Value::Object(extra);
+    if !resume {
+        return match devcode_runner::admit(
+            conn,
+            id,
+            &text,
+            &delivery,
+            explicit_id.as_deref(),
+            Some(&extra),
+        ) {
+            Ok(admitted) => (200, Some(json!({ "data": admitted.item }))),
+            Err(message) => error(500, "UnknownError", &message),
+        };
+    }
+    let Some(model) = model else {
+        return error(
+            400,
+            "InvalidRequestError",
+            "no model selected; pass model or set DEVCODE_MODEL",
+        );
+    };
+    if !running_insert(id) {
+        return error(
+            409,
+            "ConflictError",
+            "Session already has a run in progress",
+        );
+    }
+    match devcode_runner::admit(
+        conn,
+        id,
+        &text,
+        &delivery,
+        explicit_id.as_deref(),
+        Some(&extra),
+    ) {
+        Ok(admitted) => {
+            let paths = devcode_util::paths("devcode");
+            let session_id = id.to_owned();
+            std::thread::spawn(move || {
+                let mut sink = |_: &str| {};
+                let mut tool = |_: &str, _: &str| {};
+                let _ = devcode_runner::run_admitted(
+                    &paths,
+                    &model,
+                    &session_id,
+                    32,
+                    &mut sink,
+                    &mut tool,
+                );
+                running_remove(&session_id);
+            });
+            (200, Some(json!({ "data": admitted.item })))
+        }
+        Err(message) => {
+            running_remove(id);
+            error(500, "UnknownError", &message)
+        }
+    }
+}
+
 fn encode_message_cursor(id: &str, order: &str, direction: &str) -> String {
     b64url_encode(
         json!({ "id": id, "order": order, "direction": direction })
@@ -891,6 +1062,7 @@ fn route(
         ("GET", ["api", "session", id]) => get_session(id, conn),
         ("DELETE", ["api", "session", id]) => delete_session(id, conn, now),
         ("PATCH", ["api", "session", id]) => update_session(id, body, conn, now),
+        ("POST", ["api", "session", id, "prompt"]) => prompt_session(id, body, conn, now),
         ("GET", ["api", "session", id, "message"]) => list_messages(id, &params, conn),
         _ => (404, Some(json!({"message": "Not Found"}))),
     }
@@ -973,6 +1145,14 @@ fn openapi() -> serde_json::Value {
                     "tags": ["session"],
                     "summary": "Delete session",
                     "responses": { "204": { "description": "Deleted" } },
+                },
+            },
+            "/api/session/{sessionID}/prompt": {
+                "post": {
+                    "tags": ["session"],
+                    "summary": "Send message",
+                    "description": "Durably admit one session input; with resume (default) the agent loop runs in the background. 409 when the session already has a run in progress.",
+                    "responses": { "200": { "description": "Admitted inbox item" } },
                 },
             },
             "/api/session/{sessionID}/message": {
@@ -1249,6 +1429,118 @@ mod tests {
         assert_eq!(status, 204);
         let (status, _) = call(c, "GET", &format!("/api/session/{child}"), "", "", 1003);
         assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn prompt_endpoint_admits_and_validates() {
+        let previous_model = std::env::var("DEVCODE_MODEL").ok();
+        std::env::remove_var("DEVCODE_MODEL");
+        let mut t = temp_db("prompt");
+        let c = &mut t.db.conn;
+        let (_, body) = call(c, "POST", "/api/session", "", r#"{"title":"p"}"#, 1000);
+        let id = body.unwrap()["data"]["id"].as_str().unwrap().to_owned();
+
+        // admit-only: no model required
+        let (status, body) = call(
+            c,
+            "POST",
+            &format!("/api/session/{id}/prompt"),
+            "",
+            r#"{"text":"hello","resume":false,"files":[{"name":"a.rs"}]}"#,
+            1001,
+        );
+        assert_eq!(status, 200);
+        let data = &body.unwrap()["data"];
+        assert_eq!(data["type"], "user");
+        assert_eq!(data["payload"]["text"], "hello");
+        assert_eq!(data["payload"]["files"][0]["name"], "a.rs");
+        assert_eq!(data["delivery"], "steer");
+        assert!(data["id"].as_str().unwrap().starts_with("msg_"));
+        assert_eq!(data["sessionID"], id);
+        assert!(data["time"]["created"].is_number());
+
+        // explicit message id must be a message id
+        let (status, _) = call(
+            c,
+            "POST",
+            &format!("/api/session/{id}/prompt"),
+            "",
+            r#"{"text":"hi","resume":false,"id":"ses_nope"}"#,
+            1002,
+        );
+        assert_eq!(status, 400);
+
+        // resume requires a model when DEVCODE_MODEL is unset
+        let (status, body) = call(
+            c,
+            "POST",
+            &format!("/api/session/{id}/prompt"),
+            "",
+            r#"{"text":"hi"}"#,
+            1003,
+        );
+        assert_eq!(status, 400);
+        assert_eq!(body.unwrap()["_tag"], "InvalidRequestError");
+
+        // unparseable model
+        let (status, _) = call(
+            c,
+            "POST",
+            &format!("/api/session/{id}/prompt"),
+            "",
+            r#"{"text":"hi","model":"nope"}"#,
+            1004,
+        );
+        assert_eq!(status, 400);
+
+        // empty text, bad delivery, bad extras
+        for body_str in [
+            r#"{"text":""}"#,
+            r#"{"text":"hi","delivery":"now"}"#,
+            r#"{"text":"hi","resume":"yes"}"#,
+            r#"{"text":"hi","metadata":[]}"#,
+            r#"{"text":"hi","files":{}}"#,
+        ] {
+            let (status, _) = call(
+                c,
+                "POST",
+                &format!("/api/session/{id}/prompt"),
+                "",
+                body_str,
+                1005,
+            );
+            assert_eq!(status, 400, "body {body_str}");
+        }
+
+        // unknown session
+        let (status, _) = call(
+            c,
+            "POST",
+            "/api/session/ses_missing/prompt",
+            "",
+            r#"{"text":"hi","resume":false}"#,
+            1006,
+        );
+        assert_eq!(status, 404);
+
+        // the admitted prompt is visible in the message list
+        let (_, body) = call(
+            c,
+            "GET",
+            &format!("/api/session/{id}/message"),
+            "",
+            "",
+            1007,
+        );
+        let data = body.unwrap()["data"].as_array().unwrap().clone();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["type"], "user");
+        assert_eq!(data[0]["text"], "hello");
+        assert_eq!(data[0]["files"][0]["name"], "a.rs");
+
+        if let Some(value) = previous_model {
+            std::env::set_var("DEVCODE_MODEL", value);
+        }
     }
 
     #[test]

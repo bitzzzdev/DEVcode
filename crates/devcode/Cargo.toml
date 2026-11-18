@@ -16,6 +16,7 @@ devcode-service = { path = "../service" }
 devcode-core = { path = "../core" }
 devcode-ai = { path = "../ai" }
 devcode-tools = { path = "../tools" }
+devcode-runner = { path = "../runner" }
 serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
 tiny_http = "0.12"
