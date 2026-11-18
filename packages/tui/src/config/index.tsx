@@ -1,7 +1,7 @@
 export * as Config from "."
 
 import { createBindingLookup } from "@opentui/keymap/extras"
-import { Vcs } from "@opencode/schema/vcs"
+import { Vcs } from "@devcode/schema/vcs"
 import { Schema } from "effect"
 import { createContext, createMemo, onCleanup, type JSX, useContext } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -252,9 +252,9 @@ export const Info = Schema.Struct({
   }),
   animations: Schema.optional(Schema.Boolean).annotate({ description: "Enable interface animations" }),
   highlights: Schema.optional(Schema.Boolean).annotate({
-    description: "Show the release highlights once after OpenCode updates",
+    description: "Show the release highlights once after DevCode updates",
   }),
-  mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable terminal mouse capture" }),
+  mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable terminal mouse capture (default: false; the TUI is keyboard-only)" }),
   cursor: Schema.optional(Cursor),
 })
 export type Info = Schema.Schema.Type<typeof Info>
@@ -310,14 +310,14 @@ export function resolve(
       notifications: input.attention?.notifications ?? false,
       sound: input.attention?.sound ?? false,
       volume: input.attention?.volume ?? 0.4,
-      sound_pack: input.attention?.sound_pack ?? "opencode.default",
+      sound_pack: input.attention?.sound_pack ?? "devcode.default",
       sounds: input.attention?.sounds ?? {},
     },
     keybinds: createBindingLookup(TuiKeybind.toBindingConfig(TuiKeybind.parse(keybinds)), {
       bindingDefaults: TuiKeybind.bindingDefaults(),
     }),
     leader: { timeout: input.leader?.timeout ?? 2000 },
-    mouse: input.mouse ?? true,
+    mouse: input.mouse ?? false,
     cursor: {
       style: input.cursor?.style ?? "block",
       blinking: input.cursor?.blinking ?? true,
