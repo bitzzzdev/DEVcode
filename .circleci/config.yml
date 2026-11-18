@@ -1,0 +1,54 @@
+# Builds the DEVcode binaries. The fork ships through CircleCI build artifacts only.
+version: 2.1
+
+jobs:
+  build:
+    parameters:
+      target:
+        type: string
+        description: "DEVCODE_TARGET name from packages/cli/script/build.ts, e.g. linux-x64"
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - run:
+          name: Install Bun 1.4.4 (pinned to packageManager)
+          command: |
+            curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"
+            echo 'export PATH="$HOME/.bun/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Install build tools
+          command: sudo apt-get update -qq && sudo apt-get install -y -qq unzip
+      - restore_cache:
+          keys:
+            - bun-deps-v1-{{ checksum "bun.lock" }}
+      - run:
+          name: Install dependencies
+          command: bun install --frozen-lockfile
+      - save_cache:
+          key: bun-deps-v1-{{ checksum "bun.lock" }}
+          paths:
+            - ~/.bun/install/cache
+      - run:
+          name: Build DEVCODE_TARGET=<< parameters.target >>
+          command: |
+            cd packages/cli
+            DEVCODE_TARGET="<< parameters.target >>" bun run script/build.ts
+      - store_artifacts:
+          path: packages/cli/dist/DEVcode-<< parameters.target >>
+          destination: DEVcode-<< parameters.target >>
+
+workflows:
+  build:
+    jobs:
+      - build:
+          name: DEVcode-<< matrix.target >>
+          matrix:
+            parameters:
+              target:
+                - linux-x64
+                - linux-x64-baseline
+                - linux-x64-musl
+                - linux-x64-musl-baseline
+                - linux-arm64
+                - linux-arm64-musl
