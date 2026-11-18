@@ -16,6 +16,7 @@ State directories are XDG-rooted like the Bun build (`XDG_CONFIG_HOME/devcode`, 
 ## What exists today
 
 - `devcode` binary: `--version`, `serve [--service]`, `service <status|start|stop|restart|get|set|unset>`, `run [--model provider/model[#variant]] [--session ID] [--workdir PATH] [--max-steps N] <prompt>` (headless agent loop)
+- HTTP session surface (same basic auth as `/api/info`): `GET /api/session` (time_updated anchor pagination, filter echo in the base64url JSON cursor, `directory`/`project`/`subpath`/`search`/`parentID`/`archived`/`order` filters, GLOB case-class search), `POST /api/session` (parent inherits project/directory/workspace; explicit `id` returns 409 on conflict), `GET`/`PATCH`/`DELETE /api/session/:sessionID` (PATCH title/metadata/permissions/archived; DELETE is durable (`session.deleted` event) and cascades to child sessions; blobs unreferenced after the delete are released; 204 on delete/PATCH), `GET /api/session/:sessionID/message` (asc/desc, `type` filter, base64url JSON cursor `{id, order, direction}`, 200-row cap). `/openapi.json` lists the served paths. Error bodies mirror the Bun build (`{_tag, message, ...}` with the same HTTP statuses: 404 SessionNotFoundError, 400 InvalidCursorError/InvalidRequestError, 409 ConflictError, 500 UnknownError).
 - `/api/info` (basic auth, user `devcode`) and a minimal `/openapi.json`
 - `devcode-service`: managed-service config read/write (unknown keys round-trip), atomic 0600 registration file, default ports (`latest`/`dev`/`beta`/`next` 0xc0e0/49376, `local` 0xc0e1/49377, win32 0x70e0/0x70e1), `/api/info` health probe, constant-time password compare
 - `devcode-util`: XDG path resolution (same `DEVCODE_CONFIG_DIR`/`DEVCODE_TEST_HOME` overrides as the Bun build)
@@ -36,7 +37,13 @@ State directories are XDG-rooted like the Bun build (`XDG_CONFIG_HOME/devcode`, 
 - Port default is 49376 (Bun build: 49375, upstream opencode: 49374) so the Bun and Rust services can run side by side
 - A healthy incumbent whose version does not contain `rust` (e.g. the Bun build) is never replaced or killed by this build; `service stop --force` overrides
 - `service remote` is not supported yet
+- Session mutators (create/rename/metadata/permissions/archive) commit the durable event and the row update in one transaction, like `session.created`; the Bun build splits event + projector. Durable events are retained on `session.deleted`; the row is deleted.
+- Empty PATCH `title` returns 400 instead of auto-generating a title (the Bun build generates one with a model; not ported)
+- `POST /api/session` returns 200 with `{data}` (not 201); session and message lists match the Bun wire shape including cursor echo (`filter echo wins over query order`, matching the TS behavior) and `time` as millis numbers; `cost` is 0 until a pricing table exists
+- Messages list caps at 200 rows/page; sessions list has no cap beyond SQLite; `session.prompt` over HTTP is not exposed (use `DEVcode run`); deleting a session with an in-flight run does not interrupt it
+- Message cursor naming a deleted message returns an empty page, matching the Bun store
+- POST `/api/session` with a non-`ses` `id` or `parentID` returns 400; explicit-id conflict is 409 with `ConflictError`
 
 ## Not ported yet
 
-TUI (solid-js/opentui, to become ratatui), the HTTP layer for sessions/messages (`run` is the only agent entry point), the rest of session core (compaction, inbox steer/queue at boundaries, assistant `time.firstToken` streaming event parity, fork/revert), MCP, LSP, permission prompts, instruction discovery, OAuth credential stores, pricing tables, the JavaScript plugin host (to become native Rust plugins), `sdk`/`protocol` codegen. See .progress.md (gitignored) for the working ledger.
+TUI (solid-js/opentui, to become ratatui), the rest of the HTTP surface beyond sessions/messages, the rest of session core (compaction, inbox steer/queue at boundaries, assistant `time.firstToken` streaming event parity, fork/revert), MCP, LSP, permission prompts, instruction discovery, OAuth credential stores, pricing tables, the JavaScript plugin host (to become native Rust plugins), `sdk`/`protocol` codegen. See .progress.md (gitignored) for the working ledger.

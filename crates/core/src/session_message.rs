@@ -225,22 +225,10 @@ pub struct HistoryRow {
     pub parts: Vec<Value>,
 }
 
-/// Read the session transcript in order with assistant parts attached (`history.ts` withParts).
-pub fn history(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<HistoryRow>> {
-    let mut statement = conn.prepare(
-        "SELECT id, type, seq, data FROM session_message WHERE session_id = ?1 ORDER BY seq ASC",
-    )?;
-    let rows = statement
-        .query_map(params![session_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?
-        .filter_map(|row| row.ok())
-        .collect::<Vec<_>>();
+fn attach_parts(
+    conn: &Connection,
+    rows: Vec<(String, String, i64, String)>,
+) -> rusqlite::Result<Vec<HistoryRow>> {
     let ids: Vec<&str> = rows
         .iter()
         .filter(|row| row.1 == "assistant")
@@ -282,4 +270,131 @@ pub fn history(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<Hist
             }
         })
         .collect())
+}
+
+fn read_rows(
+    conn: &Connection,
+    session_id: &str,
+    where_sql: &str,
+    order: &str,
+    limit: i64,
+    parameters: Vec<Value>,
+) -> rusqlite::Result<Vec<(String, String, i64, String)>> {
+    let sql = format!(
+        "SELECT id, type, seq, data FROM session_message WHERE session_id = ?1{where_sql} ORDER BY seq {order} LIMIT {limit}"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let mut bound: Vec<rusqlite::types::Value> = Vec::with_capacity(parameters.len() + 1);
+    bound.push(rusqlite::types::Value::Text(session_id.to_owned()));
+    for value in parameters {
+        bound.push(match value {
+            Value::String(text) => rusqlite::types::Value::Text(text),
+            Value::Number(number) => match number.as_i64() {
+                Some(integer) => rusqlite::types::Value::Integer(integer),
+                None => rusqlite::types::Value::Real(number.as_f64().unwrap_or(0.0)),
+            },
+            other => rusqlite::types::Value::Text(other.to_string()),
+        });
+    }
+    let bound: Vec<&dyn rusqlite::ToSql> = bound
+        .iter()
+        .map(|value| value as &dyn rusqlite::ToSql)
+        .collect();
+    let rows = statement
+        .query_map(bound.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Read the session transcript in order with assistant parts attached (`history.ts` withParts).
+pub fn history(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<HistoryRow>> {
+    let rows = read_rows(conn, session_id, "", "ASC", i64::MAX, Vec::new())?;
+    attach_parts(conn, rows)
+}
+
+/// One page of session messages. `requested_order` is "asc"|"desc"; `cursor` is the
+/// decoded `{order, direction}` pair from the base64url JSON the endpoint returns.
+/// A cursor naming a message that no longer exists yields an empty page, the same
+/// as the Bun store.
+pub fn messages_page(
+    conn: &Connection,
+    session_id: &str,
+    limit: i64,
+    requested_order: &str,
+    type_filter: Option<&str>,
+    cursor: Option<(&str, &str)>,
+) -> rusqlite::Result<Vec<HistoryRow>> {
+    let direction = cursor.map(|(_, direction)| direction).unwrap_or("next");
+    let order = if direction == "previous" {
+        if requested_order == "asc" {
+            "desc"
+        } else {
+            "asc"
+        }
+    } else {
+        requested_order
+    };
+    let mut where_sql = String::new();
+    let mut parameters: Vec<Value> = Vec::new();
+    if let Some((cursor_id, _)) = cursor {
+        let anchor: Option<i64> = conn
+            .query_row(
+                "SELECT seq FROM session_message WHERE session_id = ?1 AND id = ?2",
+                params![session_id, cursor_id],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(anchor) = anchor else {
+            return Ok(Vec::new());
+        };
+        let cmp = if order == "asc" { ">" } else { "<" };
+        where_sql.push_str(&format!(" AND seq {cmp} ?"));
+        parameters.push(json!(anchor));
+    }
+    if let Some(type_filter) = type_filter {
+        where_sql.push_str(" AND type = ?");
+        parameters.push(json!(type_filter));
+    }
+    let mut rows = read_rows(
+        conn,
+        session_id,
+        &where_sql,
+        if order == "asc" { "ASC" } else { "DESC" },
+        limit,
+        parameters,
+    )?;
+    if direction == "previous" {
+        rows.reverse();
+    }
+    attach_parts(conn, rows)
+}
+
+/// Wire shape of one projected message: the stored row data plus id/type. Assistant
+/// rows swap their empty content envelope for the parts (history.ts withParts);
+/// inline content present in a row is kept after the parts, the same order the
+/// projector uses.
+pub fn wire(row: &HistoryRow) -> Value {
+    let mut data = row.data.clone();
+    if row.row_type == "assistant" {
+        let inline = data.get("content").cloned().unwrap_or(Value::Null);
+        let content = match inline {
+            Value::Array(items) if !items.is_empty() => {
+                let mut merged = row.parts.clone();
+                merged.extend(items);
+                Value::Array(merged)
+            }
+            _ => Value::Array(row.parts.clone()),
+        };
+        data["content"] = content;
+    }
+    data["id"] = json!(row.id);
+    data["type"] = json!(row.row_type);
+    data
 }

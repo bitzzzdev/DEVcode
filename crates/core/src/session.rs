@@ -49,6 +49,8 @@ pub struct SessionRecord {
 }
 
 pub struct CreateSession {
+    /// Explicit session id; generated when absent.
+    pub id: Option<String>,
     pub project_id: String,
     pub directory: String,
     pub workspace_id: Option<String>,
@@ -114,7 +116,10 @@ fn insert_project(
 
 /// Create a session: durable `session.created` event + `session_v2` row, one transaction.
 pub fn create(conn: &mut Connection, input: CreateSession) -> rusqlite::Result<SessionRecord> {
-    let session_id = format!("ses_{}", identifier::descending());
+    let session_id = input
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("ses_{}", identifier::descending()));
     let slug = slug();
     let payload = created_payload(&input, &session_id, &slug);
     let tx = conn.transaction()?;
@@ -234,6 +239,7 @@ pub fn create_for_directory(
     create(
         conn,
         CreateSession {
+            id: None,
             project_id: resolved.id,
             directory: resolved.directory,
             workspace_id: None,
@@ -276,6 +282,7 @@ mod tests {
         let session = create(
             &mut conn,
             CreateSession {
+                id: None,
                 project_id: "global".into(),
                 directory: dir.to_string_lossy().into_owned(),
                 workspace_id: None,
@@ -344,6 +351,7 @@ mod tests {
             create(
                 &mut conn,
                 CreateSession {
+                    id: None,
                     project_id: project.into(),
                     directory: dir.to_string_lossy().into_owned(),
                     workspace_id: None,
@@ -393,6 +401,7 @@ mod tests {
         let result = create(
             &mut conn,
             CreateSession {
+                id: None,
                 project_id: "does-not-exist".into(),
                 directory: dir.to_string_lossy().into_owned(),
                 workspace_id: None,
