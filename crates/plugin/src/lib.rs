@@ -201,11 +201,19 @@ mod tests {
             .join("target")
             .join("debug")
             .join("libdevcode_plugin_fixture.so");
-        assert!(
-            workspace_target.exists(),
-            "fixture cdylib missing: {}",
-            workspace_target.display()
-        );
+        if workspace_target.exists() {
+            return workspace_target;
+        }
+        // `cargo test` builds dev-dependencies as rlibs; the cdylib artifact is only
+        // guaranteed on `cargo build`. Build the fixture explicitly so this test is
+        // self-contained on clean checkouts (CI).
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "--locked", "-p", "devcode-plugin-fixture"])
+            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+            .status()
+            .expect("failed to invoke cargo for the fixture build");
+        assert!(status.success(), "fixture cdylib build failed");
+        assert!(workspace_target.exists());
         workspace_target
     }
 
