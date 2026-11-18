@@ -16,6 +16,7 @@ Release notes for DevCode V2, newest first.
 - Forked from upstream opencode (revision 12d2997, branch `dev`): the repository moved to GitLab
   (`bitzzdev/DEVcode`), the product and binary are `DEVcode`, wire protocol headers are `x-devcode-*`, the local
   database is `devcode.db`, tools are named `tools.devcode.*`, and the config directory is `.devcode`.
+- The managed background server default port is now `49375` (`0xc0df`; `local` channel `49376`) instead of `49374`, the upstream opencode default, so both managed services can run side by side on the same machine. The Windows remap moved to `0x70df`/`0x70e0`. Set `devcode service set port <port>` to use a different port; unset it to return to the default.
 - Removed the web app, desktop app, site, storybook, cloud/data services, nix, installer, and release tooling.
   This fork builds with CircleCI only (`.circleci/config.yml`) and ships through build artifacts, so the upstream
   npm/brew/winget/curl install paths are dead by design.
