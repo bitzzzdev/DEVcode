@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { Message, Media } from "@opencode/ai/effect"
-import { Model } from "@opencode/core/model"
-import { Provider } from "@opencode/core/provider"
-import { SessionMessage } from "@opencode/core/session/message"
-import { AgentAttachment, Base64, FileAttachment, SkillAttachment } from "@opencode/schema/prompt"
-import { Skill } from "@opencode/schema/skill"
-import { toLLMMessages } from "@opencode/core/session/runner/to-llm-message"
-import { Agent } from "@opencode/core/agent"
-import { Shell } from "@opencode/schema/shell"
-import { Location } from "@opencode/schema/location"
-import { AbsolutePath } from "@opencode/schema/schema"
+import { Message, Media } from "@devcode/ai/effect"
+import { Model } from "@devcode/core/model"
+import { Provider } from "@devcode/core/provider"
+import { SessionMessage } from "@devcode/core/session/message"
+import { AgentAttachment, Base64, FileAttachment, SkillAttachment } from "@devcode/schema/prompt"
+import { Skill } from "@devcode/schema/skill"
+import { toLLMMessages } from "@devcode/core/session/runner/to-llm-message"
+import { Agent } from "@devcode/core/agent"
+import { Shell } from "@devcode/schema/shell"
+import { Location } from "@devcode/schema/location"
+import { AbsolutePath } from "@devcode/schema/schema"
 import { DateTime } from "effect"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -897,15 +897,15 @@ Earlier work
     ])
   })
 
-  test("replays flat state under an OpenCode hosted model's route key", () => {
-    const opencode = Model.Ref.make({ id: Model.ID.make("claude-fable-5"), providerID: Provider.ID.opencode })
+  test("replays flat state under an DevCode hosted model's route key", () => {
+    const devcode = Model.Ref.make({ id: Model.ID.make("claude-fable-5"), providerID: Provider.ID.devcode })
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
-          id: id("assistant-opencode-reasoning"),
+          id: id("assistant-devcode-reasoning"),
           type: "assistant",
           agent: build,
-          model: opencode,
+          model: devcode,
           content: [
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
@@ -917,7 +917,7 @@ Earlier work
           time: { created, completed: created },
         }),
       ],
-      opencode,
+      devcode,
       "anthropic",
     )
 

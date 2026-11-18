@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { compile } from "@opencode/httpapi-codegen"
+import { compile } from "@devcode/httpapi-codegen"
 import {
   ClientApi,
   clientNamespace,
@@ -7,11 +7,11 @@ import {
   effectOmitEndpoints,
   groupNames,
   promiseOmitEndpoints,
-} from "@opencode/protocol/client"
+} from "@devcode/protocol/client"
 import { Effect } from "effect"
 import { HttpClient } from "effect/http"
-import { OpenCode as EffectOpenCode } from "../src/effect/index"
-import { OpenCode as PromiseOpenCode } from "../src/promise/index"
+import { DevCode as EffectDevCode } from "../src/effect/index"
+import { DevCode as PromiseDevCode } from "../src/promise/index"
 
 // The pre-experimental paths stay until the next minor.
 const aliases = (omitEndpoints: ReadonlySet<string>) =>
@@ -31,11 +31,11 @@ const expectSameFunctions = (client: unknown, list: ReturnType<typeof aliases>) 
 }
 
 test("every Promise client alias is the same function as its client.experimental path", () => {
-  expectSameFunctions(PromiseOpenCode.make({ baseUrl: "http://localhost:3000" }), aliases(promiseOmitEndpoints))
+  expectSameFunctions(PromiseDevCode.make({ baseUrl: "http://localhost:3000" }), aliases(promiseOmitEndpoints))
 })
 
 test("every Effect client alias is the same function as its client.experimental path", async () => {
-  const client = await EffectOpenCode.make({ baseUrl: "http://localhost:3000" }).pipe(
+  const client = await EffectDevCode.make({ baseUrl: "http://localhost:3000" }).pipe(
     Effect.provideService(
       HttpClient.HttpClient,
       HttpClient.make(() => Effect.die("unused")),

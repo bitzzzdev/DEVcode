@@ -2,8 +2,8 @@ export * as ReadToolFileSystem from "./read-filesystem.js"
 
 import path from "path"
 import { pathToFileURL } from "url"
-import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { TextBoundary } from "@opencode/util/text-boundary"
+import { makeLocationNode } from "@devcode/util/effect/app-node"
+import { TextBoundary } from "@devcode/util/text-boundary"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Environment } from "../environment/index.js"
 import type { Files } from "../environment/index.js"
@@ -115,7 +115,7 @@ export interface Interface {
   ) => Effect.Effect<TextContent | DirectoryContent | Media, ReadError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ReadToolFileSystem") {}
+export class Service extends Context.Service<Service, Interface>()("@devcode/ReadToolFileSystem") {}
 
 export const read = Effect.fn("ReadTool.read")(function* (
   files: Files,

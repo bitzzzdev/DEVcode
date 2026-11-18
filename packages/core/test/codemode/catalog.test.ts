@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { CodeModeCatalog } from "@opencode/core/codemode/catalog"
-import { CodeModeInstructions } from "@opencode/core/codemode/instructions"
+import { CodeModeCatalog } from "@devcode/core/codemode/catalog"
+import { CodeModeInstructions } from "@devcode/core/codemode/instructions"
 
 const entry = (path: string, description: string, signature?: string, pinned = false): CodeModeCatalog.Tool => ({
   type: "tool",

@@ -1,30 +1,30 @@
 import { expect } from "bun:test"
-import { Automation } from "@opencode/core/automation"
-import { AutomationTable } from "@opencode/core/automation/sql"
-import { Agent } from "@opencode/core/agent"
-import { Bus } from "@opencode/core/bus"
-import { Config } from "@opencode/core/config"
-import { Database } from "@opencode/core/database/database"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { LocationServiceMap } from "@opencode/core/location-service-map"
-import { LocationLifecycle } from "@opencode/core/location-lifecycle"
-import { LocationActivity } from "@opencode/core/location-activity"
-import { Mcp } from "@opencode/core/mcp/index"
-import { McpClient } from "@opencode/core/mcp/client"
-import { Plugin } from "@opencode/core/plugin"
-import { PluginHooks } from "@opencode/core/plugin/hooks"
-import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
-import { Session } from "@opencode/core/session"
-import { SessionExecution } from "@opencode/core/session/execution"
-import { SessionProjector } from "@opencode/core/session/projector"
-import { SessionMessage } from "@opencode/core/session/message"
-import { Permission } from "@opencode/core/permission"
-import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
-import { AbsolutePath } from "@opencode/schema/schema"
-import { Tool } from "@opencode/schema/tool"
-import { Document, Info } from "@opencode/schema/config"
-import { ConfigExperimental } from "@opencode/schema/config/experimental"
-import { LayerNode } from "@opencode/util/effect/layer-node"
+import { Automation } from "@devcode/core/automation"
+import { AutomationTable } from "@devcode/core/automation/sql"
+import { Agent } from "@devcode/core/agent"
+import { Bus } from "@devcode/core/bus"
+import { Config } from "@devcode/core/config"
+import { Database } from "@devcode/core/database/database"
+import { AppNodeBuilder } from "@devcode/core/effect/app-node-builder"
+import { LocationServiceMap } from "@devcode/core/location-service-map"
+import { LocationLifecycle } from "@devcode/core/location-lifecycle"
+import { LocationActivity } from "@devcode/core/location-activity"
+import { Mcp } from "@devcode/core/mcp/index"
+import { McpClient } from "@devcode/core/mcp/client"
+import { Plugin } from "@devcode/core/plugin"
+import { PluginHooks } from "@devcode/core/plugin/hooks"
+import { PluginSupervisor } from "@devcode/core/plugin/supervisor"
+import { Session } from "@devcode/core/session"
+import { SessionExecution } from "@devcode/core/session/execution"
+import { SessionProjector } from "@devcode/core/session/projector"
+import { SessionMessage } from "@devcode/core/session/message"
+import { Permission } from "@devcode/core/permission"
+import { SessionInboxTable, SessionTable } from "@devcode/core/session/sql"
+import { AbsolutePath } from "@devcode/schema/schema"
+import { Tool } from "@devcode/schema/tool"
+import { Document, Info } from "@devcode/schema/config"
+import { ConfigExperimental } from "@devcode/schema/config/experimental"
+import { LayerNode } from "@devcode/util/effect/layer-node"
 import { Clock, Context, Duration, Effect, Fiber, Latch, Layer, Schedule, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { eq } from "drizzle-orm"
@@ -599,7 +599,7 @@ it.effect("validates permission, push capability and arguments before creating a
       sessionID,
       permissions: [
         {
-          action: "opencode_watch_mcp_event",
+          action: "devcode_watch_mcp_event",
           resource: "ci",
           effect: "deny",
         },
@@ -691,7 +691,7 @@ for (const stop of ["malformed", "truncated", "terminated", "no replay", "permis
             sessionID,
             permissions: [
               {
-                action: "opencode_watch_mcp_event",
+                action: "devcode_watch_mcp_event",
                 resource: "ci",
                 effect: "deny",
               },

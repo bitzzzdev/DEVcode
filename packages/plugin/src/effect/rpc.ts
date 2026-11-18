@@ -1,6 +1,6 @@
-import type { RpcApi } from "@opencode/client/effect/api"
-export type { RpcClient } from "@opencode/client/effect/api"
-import type { Rpc } from "@opencode/schema/rpc"
+import type { RpcApi } from "@devcode/client/effect/api"
+export type { RpcClient } from "@devcode/client/effect/api"
+import type { Rpc } from "@devcode/schema/rpc"
 import type { Effect, Scope } from "effect"
 import type { Registration } from "./registration.js"
 

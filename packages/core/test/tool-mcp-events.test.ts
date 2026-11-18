@@ -1,12 +1,12 @@
 import { describe, expect } from "bun:test"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { Flag } from "@opencode/core/flag"
-import { Mcp } from "@opencode/core/mcp/index"
-import { McpClient } from "@opencode/core/mcp/client"
-import type { Permission } from "@opencode/core/permission"
-import { Session } from "@opencode/core/session"
-import { Tool } from "@opencode/core/tool"
-import { McpEventTools } from "@opencode/core/tool/plugin/mcp-events"
+import { AppNodeBuilder } from "@devcode/core/effect/app-node-builder"
+import { Flag } from "@devcode/core/flag"
+import { Mcp } from "@devcode/core/mcp/index"
+import { McpClient } from "@devcode/core/mcp/client"
+import type { Permission } from "@devcode/core/permission"
+import { Session } from "@devcode/core/session"
+import { Tool } from "@devcode/core/tool"
+import { McpEventTools } from "@devcode/core/tool/plugin/mcp-events"
 import { Effect, Layer, PubSub, Stream } from "effect"
 import { hostEnvironmentLayer } from "./fixture/environment"
 import { eventProducer } from "./fixture/event-server"
@@ -86,7 +86,7 @@ const setup = Effect.fnUntraced(function* (input: { flag?: string } = {}) {
         tools.execute({
           sessionID: session,
           ...toolIdentity,
-          call: { type: "tool-call", id: "call_watch", name: "opencode_watch_mcp_event", input },
+          call: { type: "tool-call", id: "call_watch", name: "devcode_watch_mcp_event", input },
         }),
       ),
       Effect.orDie,
@@ -114,7 +114,7 @@ describe("watch_mcp_event", () => {
   it.live("is absent while the mcp_events flag is off", () =>
     Effect.gen(function* () {
       const { registry } = yield* setup({ flag: "-mcp_events" })
-      expect((yield* registry.list()).map((tool) => tool.id)).not.toContain("opencode_watch_mcp_event")
+      expect((yield* registry.list()).map((tool) => tool.id)).not.toContain("devcode_watch_mcp_event")
     }),
   )
 
@@ -133,7 +133,7 @@ describe("watch_mcp_event", () => {
           },
         ],
       })
-      expect(asserts).toMatchObject([{ action: "opencode_watch_mcp_event", resources: ["jobs"], save: ["jobs"] }])
+      expect(asserts).toMatchObject([{ action: "devcode_watch_mcp_event", resources: ["jobs"], save: ["jobs"] }])
     }),
   )
 

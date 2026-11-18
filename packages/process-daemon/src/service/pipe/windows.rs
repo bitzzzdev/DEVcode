@@ -609,7 +609,7 @@ struct OutputPipe {
 
 fn output_pipe() -> Result<OutputPipe> {
     let security = PrivateSecurity::new()?;
-    let name: Vec<u16> = format!(r"\\.\pipe\opencode-pty-{:032x}", rand::random::<u128>())
+    let name: Vec<u16> = format!(r"\\.\pipe\devcode-pty-{:032x}", rand::random::<u128>())
         .encode_utf16()
         .chain([0])
         .collect();
@@ -1001,7 +1001,7 @@ mod tests {
                 .collect(),
             group_id: "test".into(),
             output_path: std::env::temp_dir().join(format!(
-                "opencode-pty-pipe-test-{:032x}.out",
+                "devcode-pty-pipe-test-{:032x}.out",
                 rand::random::<u128>()
             )),
             metadata: PipeMetadata::new(),

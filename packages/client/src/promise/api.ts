@@ -1,6 +1,6 @@
-import type { OpenCode } from "./client.js"
+import type { DevCode } from "./client.js"
 
-type Client = ReturnType<typeof OpenCode.make>
+type Client = ReturnType<typeof DevCode.make>
 
 export type { RpcApi, RpcCallOptions, RpcClient, RpcEventPayload } from "./rpc.js"
 export type { SelectedEvent, SubscribeOptions } from "../shared-events.js"

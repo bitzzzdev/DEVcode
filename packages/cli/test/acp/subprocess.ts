@@ -48,7 +48,7 @@ export async function createAcpFixture(
     readonly respond?: (request: unknown) => string | Response | Promise<string | Response>
   } = {},
 ) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-cli-acp-"))
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "devcode-cli-acp-"))
   const home = path.join(root, "workspace")
   const config = path.join(root, "config")
   const models = path.join(root, "models.json")
@@ -71,7 +71,7 @@ export async function createAcpFixture(
       })
     },
   })
-  await Bun.write(path.join(config, "opencode.json"), JSON.stringify(verifierConfig(`http://127.0.0.1:${llm.port}/v1`)))
+  await Bun.write(path.join(config, "devcode.json"), JSON.stringify(verifierConfig(`http://127.0.0.1:${llm.port}/v1`)))
   await Bun.write(models, "{}")
 
   const processes = new Set<AcpProcess>()
@@ -83,10 +83,10 @@ export async function createAcpFixture(
       const acp = spawnAcp({
         env: isolatedEnv(root, {
           USERPROFILE: root,
-          OPENCODE_CONFIG: undefined,
-          OPENCODE_CONFIG_CONTENT: undefined,
-          OPENCODE_DISABLE_AUTOUPDATE: "true",
-          OPENCODE_MODELS_PATH: models,
+          DEVCODE_CONFIG: undefined,
+          DEVCODE_CONFIG_CONTENT: undefined,
+          DEVCODE_DISABLE_AUTOUPDATE: "true",
+          DEVCODE_MODELS_PATH: models,
         }),
       })
       processes.add(acp)
@@ -124,7 +124,7 @@ export function initialize(acp: AcpProcess) {
     .request<InitializeResponse>("initialize", {
       protocolVersion: 1,
       clientCapabilities: { _meta: { "terminal-auth": true } },
-      clientInfo: { name: "opencode-local-acp", version: "0.1.0" },
+      clientInfo: { name: "devcode-local-acp", version: "0.1.0" },
     })
     .then(expectOk)
 }

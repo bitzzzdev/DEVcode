@@ -1,17 +1,17 @@
 import { describe, expect, spyOn } from "bun:test"
 import { DateTime, Effect, Layer, Stream } from "effect"
-import { Agent } from "@opencode/core/agent"
-import { Automation } from "@opencode/core/automation"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { Flag } from "@opencode/core/flag"
-import { Project } from "@opencode/core/project"
-import { AbsolutePath } from "@opencode/core/schema"
-import { Session } from "@opencode/core/session"
-import { Tool } from "@opencode/core/tool"
-import { AutomationTools } from "@opencode/core/tool/plugin/automation"
-import { Document, Info, type Entry } from "@opencode/schema/config"
-import { ConfigExperimental } from "@opencode/schema/config/experimental"
-import type { CommandDefinition } from "@opencode/plugin/effect/command"
+import { Agent } from "@devcode/core/agent"
+import { Automation } from "@devcode/core/automation"
+import { AppNodeBuilder } from "@devcode/core/effect/app-node-builder"
+import { Flag } from "@devcode/core/flag"
+import { Project } from "@devcode/core/project"
+import { AbsolutePath } from "@devcode/core/schema"
+import { Session } from "@devcode/core/session"
+import { Tool } from "@devcode/core/tool"
+import { AutomationTools } from "@devcode/core/tool/plugin/automation"
+import { Document, Info, type Entry } from "@devcode/schema/config"
+import { ConfigExperimental } from "@devcode/schema/config/experimental"
+import type { CommandDefinition } from "@devcode/plugin/effect/command"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
 import { codeModeListings, executeTool, registerToolPlugin, toolIdentity, toolNodeReplacements } from "./lib/tool"
@@ -29,7 +29,7 @@ const names = [
   "automation_pause",
   "automation_resume",
   "automation_delete",
-].map((name) => `opencode.${name}`)
+].map((name) => `devcode.${name}`)
 
 const it = testEffect(AppNodeBuilder.build(Tool.node, toolNodeReplacements()))
 
@@ -124,7 +124,7 @@ const call = (registry: Tool.Interface, name: string, input: unknown, session = 
       type: "tool-call",
       id: `call-${name}`,
       name: "execute",
-      input: { code: `return await tools.opencode.${name}(${JSON.stringify(input)})` },
+      input: { code: `return await tools.devcode.${name}(${JSON.stringify(input)})` },
     },
   })
 const run = (registry: Tool.Interface, name: string, input: unknown, session = sessionID) =>
@@ -139,7 +139,7 @@ const direct = (registry: Tool.Interface, name: string, input: unknown) =>
       tools.execute({
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: `call-direct-${name}`, name: `opencode_${name}`, input },
+        call: { type: "tool-call", id: `call-direct-${name}`, name: `devcode_${name}`, input },
       }),
     ),
     Effect.map((result) => result.content?.map((part) => (part.type === "text" ? part.text : "")).join("")),

@@ -1,7 +1,7 @@
-import { Config } from "@opencode/tui/config"
+import { Config } from "@devcode/tui/config"
 import { Schema } from "effect"
 
-export const SchemaURL = "https://opencode.ai/v2/cli.json"
+export const SchemaURL = "https://devcode.ai/v2/cli.json"
 
 export const Info = Schema.Struct({
   $schema: Schema.optional(Schema.String).annotate({ description: "JSON Schema for CLI configuration" }),

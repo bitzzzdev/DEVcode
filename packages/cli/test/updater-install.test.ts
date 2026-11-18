@@ -1,8 +1,8 @@
 import { NodeServices } from "@effect/platform-node"
-import { EffectFlock } from "@opencode/util/effect-flock"
-import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Global } from "@opencode/util/global"
-import { AppProcess } from "@opencode/util/process"
+import { EffectFlock } from "@devcode/util/effect-flock"
+import { LayerNode } from "@devcode/util/effect/layer-node"
+import { Global } from "@devcode/util/global"
+import { AppProcess } from "@devcode/util/process"
 import { expect, spyOn, test } from "bun:test"
 import { Effect, FileSystem, Layer, PlatformError, Stream } from "effect"
 import { ChildProcessSpawner } from "effect/process"
@@ -13,7 +13,7 @@ import { testEffect } from "../../core/test/lib/effect"
 
 const it = testEffect(NodeServices.layer)
 
-declare const OPENCODE_CLI_NAME: string | undefined
+declare const DEVCODE_CLI_NAME: string | undefined
 
 function fixture(
   respond: (command: {
@@ -22,7 +22,7 @@ function fixture(
   }) => Partial<AppProcess.RunResult> & {
     error?: AppProcess.AppProcessError
   } = () => ({}),
-  name = "@opencode/cli",
+  name = "@devcode/cli",
   failCleanup = false,
   releasePackage = name,
   formula?: string,
@@ -34,21 +34,21 @@ function fixture(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const root = yield* fs.makeTempDirectoryScoped({ prefix: "opencode-updater-" })
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "devcode-updater-" })
     const execPath = process.execPath
     // npm's global layout on POSIX.
     const modules = path.join(root, "lib", "node_modules")
     const executable = executableOverride
       ? yield* executableOverride(root, path.join(root, "home"))
       : formula
-        ? path.join(root, "Cellar", formula, "2.0.20", "bin", "opencode")
-        : path.join(modules, ...name.split("/"), "bin", "opencode")
+        ? path.join(root, "Cellar", formula, "2.0.20", "bin", "devcode")
+        : path.join(modules, ...name.split("/"), "bin", "devcode")
     yield* fs.makeDirectory(path.dirname(executable), { recursive: true })
     yield* fs.writeFileString(executable, "binary")
     if (!formula && !executableOverride)
       yield* fs.writeFileString(
         path.join(modules, ...name.split("/"), "package.json"),
-        JSON.stringify({ name, bin: { opencode: "bin/opencode" } }),
+        JSON.stringify({ name, bin: { devcode: "bin/devcode" } }),
       )
     const requests: string[] = []
     // The updater uses global fetch; scope this replacement to each install test.
@@ -130,7 +130,7 @@ function fixture(
               // Successful installs replace the running copy, which the updater verifies afterwards.
               const installed = args.find((arg) => arg.startsWith(`${name}@`))?.slice(name.length + 1)
               if (!formula && !executableOverride && installed && (result.exitCode ?? 0) === 0)
-                writeFileSync(manifest, JSON.stringify({ name, version: installed, bin: { opencode: "bin/opencode" } }))
+                writeFileSync(manifest, JSON.stringify({ name, version: installed, bin: { devcode: "bin/devcode" } }))
               return Effect.succeed({
                 command: command.command,
                 exitCode: 0,
@@ -163,17 +163,17 @@ const installs = [
       "install",
       "--global",
       ...prefixArgs,
-      "--allow-scripts=@opencode/cli",
+      "--allow-scripts=@devcode/cli",
       "--force",
-      "@opencode/cli@2.3.4-beta.1",
+      "@devcode/cli@2.3.4-beta.1",
     ],
   },
   {
     method: "pnpm",
-    command: () => ["pnpm", "add", "--global", "--allow-build=@opencode/cli", "@opencode/cli@2.3.4-beta.1"],
+    command: () => ["pnpm", "add", "--global", "--allow-build=@devcode/cli", "@devcode/cli@2.3.4-beta.1"],
   },
-  { method: "yarn", command: () => ["yarn", "global", "add", "@opencode/cli@2.3.4-beta.1"] },
-  { method: "vp", command: () => ["vp", "update", "-g", "@opencode/cli@2.3.4-beta.1"] },
+  { method: "yarn", command: () => ["yarn", "global", "add", "@devcode/cli@2.3.4-beta.1"] },
+  { method: "vp", command: () => ["vp", "update", "-g", "@devcode/cli@2.3.4-beta.1"] },
 ] as const
 
 installs.forEach(({ method, command }) => {
@@ -190,9 +190,9 @@ installs.forEach(({ method, command }) => {
 const installed = (directory: string[], npm = false) =>
   fixture(
     () => ({}),
-    "@opencode/cli",
+    "@devcode/cli",
     false,
-    "@opencode/cli",
+    "@devcode/cli",
     undefined,
     (root) =>
       Effect.gen(function* () {
@@ -201,16 +201,16 @@ const installed = (directory: string[], npm = false) =>
         yield* fs.makeDirectory(pkg, { recursive: true })
         yield* fs.writeFileString(
           path.join(pkg, "package.json"),
-          JSON.stringify({ name: "@opencode/cli", version: "2.2.7", bin: { opencode: "bin/opencode" } }),
+          JSON.stringify({ name: "@devcode/cli", version: "2.2.7", bin: { devcode: "bin/devcode" } }),
         )
         if (npm) {
           yield* fs.makeDirectory(path.join(root, "bin"), { recursive: true })
           yield* fs.writeFileString(path.join(root, "bin", "npm"), "npm")
         }
-        return path.join(pkg, "bin", "opencode")
+        return path.join(pkg, "bin", "devcode")
       }),
   )
-const npmGlobal = ["lib", "node_modules", "@opencode", "cli"]
+const npmGlobal = ["lib", "node_modules", "@devcode", "cli"]
 
 // Version managers such as fnm give each Node install its own prefix, while the npm on PATH may belong to another one.
 unix("npm runs from the prefix that owns the running binary with that prefix's node first on PATH", () =>
@@ -222,7 +222,7 @@ unix("npm runs from the prefix that owns the running binary with that prefix's n
     const removal = test.updater.removal("npm")
     if (!removal) return yield* Effect.die("Expected npm removal command")
     yield* removal.run
-    expect(test.commands[0]).toEqual([npm, "list", "-g", "--depth=0", "--prefix", test.prefix, "@opencode/cli"])
+    expect(test.commands[0]).toEqual([npm, "list", "-g", "--depth=0", "--prefix", test.prefix, "@devcode/cli"])
     expect(test.commands.slice(5).map((command) => command.slice(0, 5))).toEqual([
       [npm, "install", "--global", "--prefix", test.prefix],
       [npm, "uninstall", "--global", "--prefix", test.prefix],
@@ -242,9 +242,9 @@ unix("npm runs from the prefix that owns the running binary with that prefix's n
 
 unix("npm only derives a prefix when the running package is that prefix's global package", () =>
   Effect.gen(function* () {
-    const test = yield* installed(["lib", "node_modules", "wrapper", "node_modules", "@opencode", "cli"], true)
+    const test = yield* installed(["lib", "node_modules", "wrapper", "node_modules", "@devcode", "cli"], true)
     yield* test.updater.method()
-    expect(test.commands[0]).toEqual(["npm", "list", "-g", "--depth=0", "@opencode/cli"])
+    expect(test.commands[0]).toEqual(["npm", "list", "-g", "--depth=0", "@devcode/cli"])
     expect(test.paths[0]).toBeUndefined()
   }),
 )
@@ -265,20 +265,20 @@ const managers = [
   {
     name: "Volta",
     label: "~/.volta",
-    directory: [".volta", "tools", "image", "packages", "@opencode", "cli", ...npmGlobal],
-    command: "volta install @opencode/cli",
+    directory: [".volta", "tools", "image", "packages", "@devcode", "cli", ...npmGlobal],
+    command: "volta install @devcode/cli",
   },
   {
     name: "Volta",
     label: "custom VOLTA_HOME",
-    directory: ["volta-home", "tools", "image", "packages", "@opencode", "cli", ...npmGlobal],
-    command: "volta install @opencode/cli",
+    directory: ["volta-home", "tools", "image", "packages", "@devcode", "cli", ...npmGlobal],
+    command: "volta install @devcode/cli",
   },
   {
     name: "mise",
     label: "mise npm backend",
-    directory: ["mise", "installs", "npm-opencode-cli", "2.2.7", ...npmGlobal],
-    command: "mise use -g npm:@opencode/cli",
+    directory: ["mise", "installs", "npm-devcode-cli", "2.2.7", ...npmGlobal],
+    command: "mise use -g npm:@devcode/cli",
   },
 ] as const
 
@@ -289,16 +289,16 @@ managers.forEach((manager) => {
       expect(yield* test.updater.method()).toBeUndefined()
       const latest = yield* test.updater.managed()
       const pinned = yield* test.updater.managed("v2.2.6")
-      expect(latest?.title).toBe(`OpenCode is managed by ${manager.name}`)
+      expect(latest?.title).toBe(`DevCode is managed by ${manager.name}`)
       expect(latest?.command).toBe(`${manager.command}@2.3.4`)
       expect(pinned?.command).toBe(`${manager.command}@2.2.6`)
       const applied = yield* test.updater.apply("2.3.4").pipe(Effect.flip)
-      expect(applied.message).toBe(`OpenCode is managed by ${manager.name}. Update it with ${manager.command}@2.3.4`)
+      expect(applied.message).toBe(`DevCode is managed by ${manager.name}. Update it with ${manager.command}@2.3.4`)
       // An explicit --method keeps its existing command, and the version check reports the untouched copy.
       const explicit = yield* test.updater.upgrade("npm", "2.3.4").pipe(Effect.flip)
       expect(explicit.message).toContain("is still version 2.2.7")
       expect(test.commands).toEqual([
-        ["npm", "install", "--global", "--allow-scripts=@opencode/cli", "--force", "@opencode/cli@2.3.4"],
+        ["npm", "install", "--global", "--allow-scripts=@devcode/cli", "--force", "@devcode/cli@2.3.4"],
       ])
     }),
   )
@@ -319,9 +319,9 @@ managers.forEach((manager) => {
 
 it.live("vp force-installs a renamed V2 package that replaces the existing binary owner", () =>
   Effect.gen(function* () {
-    const test = yield* fixture(() => ({}), "@opencode/cli", false, "@opencode/cli-node")
+    const test = yield* fixture(() => ({}), "@devcode/cli", false, "@devcode/cli-node")
     yield* test.updater.upgrade("vp", "v2.3.4-beta.1")
-    expect(test.commands).toEqual([["vp", "install", "-g", "--force", "@opencode/cli-node@2.3.4-beta.1"]])
+    expect(test.commands).toEqual([["vp", "install", "-g", "--force", "@devcode/cli-node@2.3.4-beta.1"]])
   }),
 )
 
@@ -330,9 +330,9 @@ it.live("vp removes the package from its managed global store", () =>
     const test = yield* fixture()
     const removal = test.updater.removal("vp")
     if (!removal) return yield* Effect.die("Expected vp removal command")
-    expect(removal.command).toEqual(["vp", "uninstall", "-g", "@opencode/cli"])
+    expect(removal.command).toEqual(["vp", "uninstall", "-g", "@devcode/cli"])
     yield* removal.run
-    expect(test.commands).toEqual([["vp", "uninstall", "-g", "@opencode/cli"]])
+    expect(test.commands).toEqual([["vp", "uninstall", "-g", "@devcode/cli"]])
   }),
 )
 ;[0, 1].forEach((exitCode) => {
@@ -347,7 +347,7 @@ it.live("vp removes the package from its managed global store", () =>
       const cache = test.commands[0]?.[5]
       expect(cache).toStartWith(path.join(test.global.cache, "update-"))
       expect(test.commands).toEqual([
-        ["bun", "install", "--global", "--trust", "--cache-dir", cache, "@opencode/cli@2.3.4-beta.1"],
+        ["bun", "install", "--global", "--trust", "--cache-dir", cache, "@devcode/cli@2.3.4-beta.1"],
       ])
       expect(yield* test.fs.readDirectory(test.global.cache)).toEqual([])
       expect(result._tag).toBe(exitCode === 0 ? "None" : "Some")
@@ -358,7 +358,7 @@ it.live("vp removes the package from its managed global store", () =>
 
 it.live("bun ignores install cache cleanup failures", () =>
   Effect.gen(function* () {
-    const test = yield* fixture(() => ({}), "@opencode/cli", true)
+    const test = yield* fixture(() => ({}), "@devcode/cli", true)
     yield* test.updater.upgrade("bun", "v2.3.4-beta.1")
     expect(test.commands).toHaveLength(1)
   }),
@@ -382,7 +382,7 @@ it.live("bun ignores install cache cleanup failures", () =>
       const installer = test.commands[0]?.[3]
       expect(installer).toStartWith(path.join(test.global.cache, "update-"))
       expect(test.commands).toEqual([
-        ["curl", "-fsSL", "-o", installer, "https://opencode.ai/v2/install"],
+        ["curl", "-fsSL", "-o", installer, "https://devcode.ai/v2/install"],
         ...(failure === "download" ? [] : [[test.bash, installer, "--version", "2.3.4-beta.1", "--no-modify-path"]]),
       ])
       expect(yield* test.fs.readDirectory(test.global.cache)).toEqual([])
@@ -429,20 +429,20 @@ it.live("install failures expose stderr and process errors do not report success
         stdout: Buffer.from(
           command.command === method
             ? method === "vp"
-              ? JSON.stringify([{ name: "@opencode/cli", version: "2.3.4" }])
-              : "@opencode/cli@2.3.4"
+              ? JSON.stringify([{ name: "@devcode/cli", version: "2.3.4" }])
+              : "@devcode/cli@2.3.4"
             : command.command === "vp"
               ? "[]"
-              : "opencode-ai@1.0.0",
+              : "devcode-ai@1.0.0",
         ),
       }))
       expect(yield* test.updater.method()).toBe(method)
       expect(test.commands).toEqual([
-        ["npm", "list", "-g", "--depth=0", ...test.prefixArgs, "@opencode/cli"],
-        ["pnpm", "list", "-g", "--depth=0", "@opencode/cli"],
+        ["npm", "list", "-g", "--depth=0", ...test.prefixArgs, "@devcode/cli"],
+        ["pnpm", "list", "-g", "--depth=0", "@devcode/cli"],
         ["bun", "pm", "ls", "-g"],
         ["yarn", "global", "list"],
-        ["vp", "list", "-g", "--json", "@opencode/cli"],
+        ["vp", "list", "-g", "--json", "@devcode/cli"],
       ])
     }),
   )
@@ -452,7 +452,7 @@ it.live("method detection tolerates unavailable package managers", () =>
   Effect.gen(function* () {
     const test = yield* fixture((command) =>
       command.command === "yarn"
-        ? { stdout: Buffer.from("@opencode/cli@2.3.4") }
+        ? { stdout: Buffer.from("@devcode/cli@2.3.4") }
         : { error: new AppProcess.AppProcessError({ command: command.command }) },
     )
     expect(yield* test.updater.method()).toBe("yarn")
@@ -463,7 +463,7 @@ it.live("method detection tolerates unavailable package managers", () =>
 it.live("vp detection ignores no-match output that repeats the package name", () =>
   Effect.gen(function* () {
     const test = yield* fixture((command) => ({
-      stdout: Buffer.from(command.command === "vp" ? "No global packages matching '@opencode/cli'." : ""),
+      stdout: Buffer.from(command.command === "vp" ? "No global packages matching '@devcode/cli'." : ""),
     }))
     expect(yield* test.updater.method()).toBeUndefined()
   }),
@@ -471,30 +471,30 @@ it.live("vp detection ignores no-match output that repeats the package name", ()
 
 it.live("Homebrew Core installs check and upgrade the Core formula", () =>
   Effect.gen(function* () {
-    const test = yield* fixture(() => ({}), "@opencode/cli", false, "anomalyco/tap/opencode-v2", "opencode")
+    const test = yield* fixture(() => ({}), "@devcode/cli", false, "anomalyco/tap/devcode-v2", "devcode")
     expect(yield* test.updater.method()).toBe("brew")
     expect(yield* test.updater.latest()).toBe("2.0.21")
     yield* test.updater.upgrade("brew", "2.0.21")
-    expect(test.commands).toEqual([["brew", "upgrade", "opencode"]])
+    expect(test.commands).toEqual([["brew", "upgrade", "devcode"]])
     // An explicitly selected method keeps its own release source.
     expect(yield* test.updater.latest("npm")).toBe("2.3.4")
     expect(test.requests).toEqual([
-      "https://formulae.brew.sh/api/formula/opencode.json",
-      "https://opencode.ai/update/api/local/cli/npm?current=local",
+      "https://formulae.brew.sh/api/formula/devcode.json",
+      "https://devcode.ai/update/api/local/cli/npm?current=local",
     ])
   }),
 )
-;["opencode-v2", "opencode-beta"].forEach((formula) => {
+;["devcode-v2", "devcode-beta"].forEach((formula) => {
   it.live(`Homebrew tap installs of ${formula} use the published tap formula`, () =>
     Effect.gen(function* () {
-      const test = yield* fixture(() => ({}), "@opencode/cli", false, `anomalyco/tap/${formula}`, formula)
+      const test = yield* fixture(() => ({}), "@devcode/cli", false, `anomalyco/tap/${formula}`, formula)
       expect(yield* test.updater.method()).toBe("brew")
       expect(yield* test.updater.latest()).toBe("2.3.4")
       yield* test.updater.upgrade("brew", "2.3.4")
       expect(test.commands).toEqual([["brew", "upgrade", `anomalyco/tap/${formula}`]])
       expect(test.requests).toEqual([
-        "https://opencode.ai/update/api/local/cli/homebrew?current=local",
-        "https://opencode.ai/update/api/local/cli/homebrew?current=local",
+        "https://devcode.ai/update/api/local/cli/homebrew?current=local",
+        "https://devcode.ai/update/api/local/cli/homebrew?current=local",
       ])
     }),
   )
@@ -503,9 +503,9 @@ it.live("Homebrew Core installs check and upgrade the Core formula", () =>
 const winget = (search: Partial<AppProcess.RunResult>) =>
   fixture(
     (command) => (command.args[0] === "search" ? search : {}),
-    "@opencode/cli",
+    "@devcode/cli",
     false,
-    "@opencode/cli",
+    "@devcode/cli",
     undefined,
     (root) =>
       Effect.succeed(
@@ -516,14 +516,14 @@ const winget = (search: Partial<AppProcess.RunResult>) =>
           "Microsoft",
           "WinGet",
           "Packages",
-          "Anomaly.OpenCode_Microsoft.Winget.Source_8wekyb3d8bbwe",
-          "opencode.exe",
+          "Anomaly.DevCode_Microsoft.Winget.Source_8wekyb3d8bbwe",
+          "devcode.exe",
         ),
       ),
   )
 const wingetArgs = [
   "--id",
-  "Anomaly.OpenCode",
+  "Anomaly.DevCode",
   "--exact",
   "--source",
   "winget",
@@ -535,7 +535,7 @@ it.live("WinGet installs check, upgrade, and remove the version in the WinGet in
   Effect.gen(function* () {
     const test = yield* winget({
       stdout: Buffer.from(
-        "Name     Id               Version\r\n------------------------------\r\nOpenCode Anomaly.OpenCode 2.0.28\r\n",
+        "Name     Id               Version\r\n------------------------------\r\nDevCode Anomaly.DevCode 2.0.28\r\n",
       ),
     })
     expect(yield* test.updater.method()).toBe("winget")
@@ -549,7 +549,7 @@ it.live("WinGet installs check, upgrade, and remove the version in the WinGet in
       ["winget", "upgrade", ...wingetArgs, "--version", "2.0.28", "--silent", "--accept-package-agreements"],
       ["winget", "uninstall", ...wingetArgs],
     ])
-    // WinGet moderates submissions, so the OpenCode release service may list a version WinGet cannot install yet.
+    // WinGet moderates submissions, so the DevCode release service may list a version WinGet cannot install yet.
     expect(test.requests).toEqual([])
   }),
 )
@@ -565,11 +565,11 @@ it.live("WinGet update checks report a missing package instead of a version", ()
   }),
 )
 
-// Links are named opencode-upgrade-<pid>-<random>.exe; read them from inside the installer run.
+// Links are named devcode-upgrade-<pid>-<random>.exe; read them from inside the installer run.
 const links = (directory: string) =>
-  existsSync(directory) ? readdirSync(directory).filter((name) => name.startsWith("opencode-")) : []
+  existsSync(directory) ? readdirSync(directory).filter((name) => name.startsWith("devcode-")) : []
 const upgradeLinks = (directory: string) =>
-  links(directory).filter((name) => name.startsWith(`opencode-upgrade-${process.pid}-`))
+  links(directory).filter((name) => name.startsWith(`devcode-upgrade-${process.pid}-`))
 
 windows("windows keeps a second link to the running binary in the cache while the installer runs", () =>
   Effect.gen(function* () {
@@ -585,13 +585,13 @@ windows("windows keeps a second link to the running binary in the cache while th
     layout.cache = test.global.cache
     yield* test.fs.makeDirectory(test.global.cache, { recursive: true })
     // pid 999999999 does not exist; pid 4 is System, alive but not openable (EPERM).
-    yield* test.fs.writeFileString(path.join(test.global.cache, "opencode-upgrade-999999999-dead.exe"), "exited")
-    yield* test.fs.writeFileString(path.join(test.global.cache, "opencode-service-4-aa.exe"), "inaccessible")
+    yield* test.fs.writeFileString(path.join(test.global.cache, "devcode-upgrade-999999999-dead.exe"), "exited")
+    yield* test.fs.writeFileString(path.join(test.global.cache, "devcode-service-4-aa.exe"), "inaccessible")
     yield* test.updater.upgrade("bun", "2.3.4")
     expect(test.commands).toHaveLength(1)
     // The installed path never disappears; the extra link is released and only dead ones are swept.
     expect(yield* test.fs.readFileString(test.executable)).toBe("binary")
-    expect(links(test.global.cache)).toEqual(["opencode-service-4-aa.exe"])
+    expect(links(test.global.cache)).toEqual(["devcode-service-4-aa.exe"])
   }),
 )
 
@@ -622,7 +622,7 @@ windows("windows keeps the uninstall link in the temporary directory, not the re
     const removal = test.updater.removal("bun")
     if (!removal) return yield* Effect.die("Expected bun removal command")
     yield* removal.run
-    expect(test.commands).toEqual([["bun", "remove", "--global", "@opencode/cli"]])
+    expect(test.commands).toEqual([["bun", "remove", "--global", "@devcode/cli"]])
     expect(links(test.global.cache)).toEqual([])
     expect(links(test.global.tmp)).toEqual([])
   }),
@@ -639,11 +639,11 @@ windows("windows links the curl binary before the installer replaces it", () =>
         }
         return {}
       },
-      "@opencode/cli",
+      "@devcode/cli",
       false,
-      "@opencode/cli",
+      "@devcode/cli",
       undefined,
-      (_root, home) => Effect.succeed(path.join(home, ".opencode", "bin", "opencode.exe")),
+      (_root, home) => Effect.succeed(path.join(home, ".devcode", "bin", "devcode.exe")),
     )
     layout.executable = test.executable
     layout.cache = test.global.cache
@@ -662,15 +662,15 @@ unix("curl method detection resolves symlinked home directories", () =>
   Effect.gen(function* () {
     const test = yield* fixture(
       () => ({}),
-      "@opencode/cli",
+      "@devcode/cli",
       false,
-      "@opencode/cli",
+      "@devcode/cli",
       undefined,
       (root, home) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem
           const realHome = path.join(root, "real-home")
-          const bin = path.join(realHome, ".opencode", "bin", "opencode")
+          const bin = path.join(realHome, ".devcode", "bin", "devcode")
           yield* fs.makeDirectory(path.dirname(bin), { recursive: true })
           yield* fs.symlink(realHome, home)
           return bin
@@ -687,7 +687,7 @@ windows("windows leaves a source checkout's runtime alone", () =>
     const test = yield* fixture(() => {
       expect(links(layout.cache)).toEqual([])
       return {}
-    }, "not-opencode")
+    }, "not-devcode")
     layout.cache = test.global.cache
     yield* test.updater.upgrade("bun", "2.3.4")
     expect(test.commands).toHaveLength(1)
@@ -714,7 +714,7 @@ test("Node distribution honors the compile-time CLI name", async () => {
       "test",
       import.meta.path,
       "--define",
-      'OPENCODE_CLI_NAME="opencode2-node"',
+      'DEVCODE_CLI_NAME="devcode2-node"',
       "--test-name-pattern",
       "^Node distribution resolves the published npm package$",
     ],
@@ -731,35 +731,35 @@ test("Node distribution honors the compile-time CLI name", async () => {
   expect(stderr).toContain("1 pass")
 })
 
-if (typeof OPENCODE_CLI_NAME === "string" && OPENCODE_CLI_NAME === "opencode2-node") {
+if (typeof DEVCODE_CLI_NAME === "string" && DEVCODE_CLI_NAME === "devcode2-node") {
   it.live("Node distribution resolves the published npm package", () =>
     Effect.gen(function* () {
       const test = yield* fixture(
         (command) => ({
-          stdout: Buffer.from(command.command === "npm" ? "@opencode/cli-node@2.3.4" : ""),
+          stdout: Buffer.from(command.command === "npm" ? "@devcode/cli-node@2.3.4" : ""),
         }),
-        "@opencode/cli-node",
+        "@devcode/cli-node",
       )
       expect(yield* test.updater.method()).toBe("npm")
       yield* test.updater.upgrade("npm", "v2.3.4")
       yield* test.updater.upgrade("pnpm", "v2.3.4")
       yield* test.updater.upgrade("vp", "v2.3.4")
       expect(test.commands).toEqual([
-        ["npm", "list", "-g", "--depth=0", ...test.prefixArgs, "@opencode/cli-node"],
-        ["pnpm", "list", "-g", "--depth=0", "@opencode/cli-node"],
+        ["npm", "list", "-g", "--depth=0", ...test.prefixArgs, "@devcode/cli-node"],
+        ["pnpm", "list", "-g", "--depth=0", "@devcode/cli-node"],
         ["bun", "pm", "ls", "-g"],
         ["yarn", "global", "list"],
-        ["vp", "list", "-g", "--json", "@opencode/cli-node"],
+        ["vp", "list", "-g", "--json", "@devcode/cli-node"],
         [
           "npm",
           "install",
           "--global",
           ...test.prefixArgs,
-          "--allow-scripts=@opencode/cli-node",
-          "@opencode/cli-node@2.3.4",
+          "--allow-scripts=@devcode/cli-node",
+          "@devcode/cli-node@2.3.4",
         ],
-        ["pnpm", "add", "--global", "--allow-build=@opencode/cli-node", "@opencode/cli-node@2.3.4"],
-        ["vp", "update", "-g", "@opencode/cli-node@2.3.4"],
+        ["pnpm", "add", "--global", "--allow-build=@devcode/cli-node", "@devcode/cli-node@2.3.4"],
+        ["vp", "update", "-g", "@devcode/cli-node@2.3.4"],
       ])
     }),
   )

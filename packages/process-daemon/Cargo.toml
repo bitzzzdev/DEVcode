@@ -1,11 +1,11 @@
 [package]
-name = "opencode-pty"
+name = "devcode-pty"
 version = "0.6.0"
 edition = "2024"
 rust-version = "1.90"
-description = "Persistent PTY service for OpenCode"
+description = "Persistent PTY service for DevCode"
 license = "MIT"
-repository = "https://github.com/anomalyco/opencode"
+repository = "https://gitlab.com/bitzzdev/DEVcode"
 links = "ghostty-vt"
 
 [dependencies]

@@ -1,11 +1,11 @@
 export * as BlobStore from "./blob-store.js"
 
 import path from "path"
-import { Media } from "@opencode/ai/effect"
-import { BlobStore } from "@opencode/schema/blob-store"
-import { makeGlobalNode } from "@opencode/util/effect/app-node"
-import { FSUtil } from "@opencode/util/fs-util"
-import { Global } from "@opencode/util/global"
+import { Media } from "@devcode/ai/effect"
+import { BlobStore } from "@devcode/schema/blob-store"
+import { makeGlobalNode } from "@devcode/util/effect/app-node"
+import { FSUtil } from "@devcode/util/fs-util"
+import { Global } from "@devcode/util/global"
 import { Context, Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { FileRetention } from "./file-retention.js"
 
@@ -38,7 +38,7 @@ export interface Interface {
   readonly remove: (id: ID) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/BlobStore") {}
+export class Service extends Context.Service<Service, Interface>()("@devcode/BlobStore") {}
 
 /**
  * Files under `<data>/blobs/`, deleted 7 days after they're written, at startup and hourly. Nothing tracks who uses a

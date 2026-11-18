@@ -3,20 +3,20 @@ import path from "node:path"
 import { expect } from "bun:test"
 import { type Duration, Effect, Layer, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import type { VideoStatus } from "@opencode/ai/effect"
-import { Database } from "@opencode/core/database/database"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { Watcher } from "@opencode/core/filesystem/watcher"
-import { Generate } from "@opencode/core/generate"
-import { BlobStore } from "@opencode/core/blob-store"
-import { VideoGeneration } from "@opencode/core/video-generation"
-import { LocationServiceMap } from "@opencode/core/location-service-map"
-import type { VideoID, VideoJob } from "@opencode/schema/generate"
-import { Model } from "@opencode/schema/model"
-import { Provider } from "@opencode/schema/provider"
-import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Global } from "@opencode/util/global"
+import type { VideoStatus } from "@devcode/ai/effect"
+import { Database } from "@devcode/core/database/database"
+import { AppNodeBuilder } from "@devcode/core/effect/app-node-builder"
+import { Watcher } from "@devcode/core/filesystem/watcher"
+import { Generate } from "@devcode/core/generate"
+import { BlobStore } from "@devcode/core/blob-store"
+import { VideoGeneration } from "@devcode/core/video-generation"
+import { LocationServiceMap } from "@devcode/core/location-service-map"
+import type { VideoID, VideoJob } from "@devcode/schema/generate"
+import { Model } from "@devcode/schema/model"
+import { Provider } from "@devcode/schema/provider"
+import { makeLocationNode } from "@devcode/util/effect/app-node"
+import { LayerNode } from "@devcode/util/effect/layer-node"
+import { Global } from "@devcode/util/global"
 import { offlineModels } from "./fixture/models"
 import { tmpdirScoped } from "./fixture/tmpdir"
 import { it } from "./lib/effect"
@@ -45,7 +45,7 @@ const app = (dir: string, state: State) =>
     LayerNode.group([VideoGeneration.node, BlobStore.node, Database.node, LocationServiceMap.node]),
     [
       Global.node.replace(Global.layerWith({ data: path.join(dir, "data"), config: path.join(dir, "config") })),
-      Database.node.replace(Database.configured({ path: "opencode.db" })),
+      Database.node.replace(Database.configured({ path: "devcode.db" })),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),
       Generate.node.replace(
@@ -87,7 +87,7 @@ const listed = (dir: string) => Effect.promise(() => fs.readdir(blobs(dir)).catc
 
 it.effect("stores each finished video as a blob, read back after a restart until it's 7 days old", () =>
   Effect.gen(function* () {
-    const dir = (yield* tmpdirScoped("opencode-generation-")).path
+    const dir = (yield* tmpdirScoped("devcode-generation-")).path
     const state = provider()
     state.results = [Stream.make(mp4), Stream.make(mp4, mp4)]
     const job = yield* Effect.gen(function* () {
@@ -129,7 +129,7 @@ it.effect("stores each finished video as a blob, read back after a restart until
 
 it.effect("keeps none of a job's videos when one of their downloads keeps failing", () =>
   Effect.gen(function* () {
-    const dir = (yield* tmpdirScoped("opencode-generation-fail-")).path
+    const dir = (yield* tmpdirScoped("devcode-generation-fail-")).path
     const state = provider()
     state.results = [
       Stream.make(mp4),
@@ -152,7 +152,7 @@ it.effect("keeps none of a job's videos when one of their downloads keeps failin
 
 it.effect("reports the provider's failure reason, a job past its deadline and a rejected submission", () =>
   Effect.gen(function* () {
-    const dir = (yield* tmpdirScoped("opencode-generation-errors-")).path
+    const dir = (yield* tmpdirScoped("devcode-generation-errors-")).path
     const state = provider()
     yield* Effect.gen(function* () {
       const generations = yield* VideoGeneration.Service

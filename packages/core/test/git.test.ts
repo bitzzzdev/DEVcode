@@ -3,10 +3,10 @@ import { $ } from "bun"
 import fs from "fs/promises"
 import path from "path"
 import { Effect, Exit } from "effect"
-import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Git } from "@opencode/core/git"
-import { AbsolutePath, RelativePath } from "@opencode/core/schema"
-import { VcsPatch } from "@opencode/core/vcs/patch"
+import { LayerNode } from "@devcode/util/effect/layer-node"
+import { Git } from "@devcode/core/git"
+import { AbsolutePath, RelativePath } from "@devcode/core/schema"
+import { VcsPatch } from "@devcode/core/vcs/patch"
 import { branch, commit, initGit, initRepo, read, withRemote } from "./fixture/git"
 import { tmpdirScoped } from "./fixture/tmpdir"
 import { withEnv } from "./fixture/env"
@@ -333,11 +333,11 @@ describe("Git trees", () => {
         yield* Effect.promise(() => $`git --git-dir ${storage} config --local --includes core.autocrlf`.text()),
       ).toBe("false\n")
       expect(
-        (yield* Effect.promise(() => fs.readFile(path.join(storage, "config"), "utf8"))).match(/opencode\.gitconfig/g),
+        (yield* Effect.promise(() => fs.readFile(path.join(storage, "config"), "utf8"))).match(/devcode\.gitconfig/g),
       ).toHaveLength(1)
       expect(
         yield* Effect.promise(() => $`git --git-dir ${storage} config --local --get-all include.path`.text()),
-      ).toBe("opencode.gitconfig\nfirst.gitconfig\nsecond.gitconfig\n")
+      ).toBe("devcode.gitconfig\nfirst.gitconfig\nsecond.gitconfig\n")
       yield* git.index.refresh({ repository, scope: RelativePath.make("scope") })
       const before = yield* git.tree.write(repository)
 

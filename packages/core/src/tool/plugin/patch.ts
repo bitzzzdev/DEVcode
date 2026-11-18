@@ -1,11 +1,11 @@
 export * as PatchTool from "./patch.js"
 
-import type { Context } from "@opencode/plugin/effect/plugin"
-import type { SessionHooks } from "@opencode/plugin/effect/session"
-import { ToolFailure } from "@opencode/ai/effect"
-import { FileDiff } from "@opencode/schema/file-diff"
+import type { Context } from "@devcode/plugin/effect/plugin"
+import type { SessionHooks } from "@devcode/plugin/effect/session"
+import { ToolFailure } from "@devcode/ai/effect"
+import { FileDiff } from "@devcode/schema/file-diff"
 import { Effect, Result, Schema } from "effect"
-import { Bom } from "@opencode/util/bom"
+import { Bom } from "@devcode/util/bom"
 import { Config } from "../../config.js"
 import { ConfigEntryObserver } from "../../config/plugin/entry-observer.js"
 import { Flag } from "../../flag.js"
@@ -15,7 +15,7 @@ import { Formatter } from "../../formatter.js"
 import { FileMutation } from "../../file-mutation.js"
 import { Location } from "../../location.js"
 import { FileAccess } from "../../file-access.js"
-import { Patch } from "@opencode/util/patch"
+import { Patch } from "@devcode/util/patch"
 import { Permission } from "../../permission.js"
 import DESCRIPTION from "../patch.txt"
 import GRAMMAR from "../patch-grammar.txt"
@@ -52,7 +52,7 @@ type Prepared =
     })
 
 export const Plugin = {
-  id: "opencode.tool.patch",
+  id: "devcode.tool.patch",
   effect: Effect.fn("PatchTool.Plugin")(function* (ctx: Context) {
     const environment = yield* Environment.Service
     const access = yield* FileAccess.Service

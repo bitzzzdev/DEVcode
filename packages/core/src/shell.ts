@@ -18,20 +18,20 @@ import {
 } from "effect"
 import { ChildProcess } from "effect/process"
 import { produce } from "immer"
-import { Shell } from "@opencode/schema/shell"
-import { AppProcess } from "@opencode/util/process"
-import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
-import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
-import { FSUtil } from "@opencode/util/fs-util"
-import { TextBoundary } from "@opencode/util/text-boundary"
+import { Shell } from "@devcode/schema/shell"
+import { AppProcess } from "@devcode/util/process"
+import { CrossSpawnSpawner } from "@devcode/util/cross-spawn-spawner"
+import { makeGlobalNode, makeLocationNode } from "@devcode/util/effect/app-node"
+import { FSUtil } from "@devcode/util/fs-util"
+import { TextBoundary } from "@devcode/util/text-boundary"
 import { Bus } from "./bus.js"
 import { Environment } from "./environment/index.js"
 import { FileRetention } from "./file-retention.js"
 import { Location } from "./location.js"
-import { Global } from "@opencode/util/global"
+import { Global } from "@devcode/util/global"
 import { PersistentPty } from "./persistent-pty.js"
 import { ShellSelect } from "./shell/select.js"
-import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
+import type { ShellCreateBefore } from "@devcode/plugin/effect/shell"
 import { PluginHooks } from "./plugin/hooks.js"
 import { SessionEnvironment } from "./session/environment.js"
 import { SessionSchema } from "./session/schema.js"
@@ -180,7 +180,7 @@ export interface Interface {
   readonly handoffPrepared: () => boolean
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Shell") {}
+export class Service extends Context.Service<Service, Interface>()("@devcode/Shell") {}
 
 export const cleanup = Effect.fn("Shell.cleanup")(function* () {
   const fs = yield* FSUtil.Service
@@ -268,7 +268,7 @@ export interface DaemonInterface {
 }
 
 /** The process daemon's shell commands, owned by the server and grouped by Location. */
-export class Daemon extends Context.Service<Daemon, DaemonInterface>()("@opencode/Shell/Daemon") {}
+export class Daemon extends Context.Service<Daemon, DaemonInterface>()("@devcode/Shell/Daemon") {}
 
 const daemonLayer = Layer.effect(
   Daemon,
@@ -898,7 +898,7 @@ const layer = () =>
           env: {
             ...baseEnv,
             TERM: "xterm-256color",
-            OPENCODE_TERMINAL: "1",
+            DEVCODE_TERMINAL: "1",
           },
         }
         yield* hooks.trigger("shell", "create.before", invocation)
@@ -1146,11 +1146,11 @@ function splitCharacter(bytes: Buffer, cut: number, running: boolean) {
 function annotate(info: Info) {
   const sessionID = info.metadata.sessionID
   return Effect.annotateCurrentSpan({
-    "opencode.shell.id": info.id,
-    "opencode.shell.command": spanCommand(info.command),
+    "devcode.shell.id": info.id,
+    "devcode.shell.command": spanCommand(info.command),
     ...(typeof sessionID === "string" ? { "session.id": sessionID } : {}),
-    ...(info.metadata.background === true ? { "opencode.shell.background": true } : {}),
-    ...(info.status === "running" ? {} : { "opencode.shell.status": info.status }),
+    ...(info.metadata.background === true ? { "devcode.shell.background": true } : {}),
+    ...(info.status === "running" ? {} : { "devcode.shell.status": info.status }),
     ...(info.exit === undefined ? {} : { "process.exit.code": info.exit }),
   })
 }

@@ -1,13 +1,13 @@
-import { Service, type Endpoint } from "@opencode/client/effect/service"
-import { OpenCode, type SessionMessageAssistantTool } from "@opencode/client/promise"
-import { FSUtil } from "@opencode/util/fs-util"
-import { noTimeoutFetch } from "@opencode/util/no-timeout-fetch"
+import { Service, type Endpoint } from "@devcode/client/effect/service"
+import { DevCode, type SessionMessageAssistantTool } from "@devcode/client/promise"
+import { FSUtil } from "@devcode/util/fs-util"
+import { noTimeoutFetch } from "@devcode/util/no-timeout-fetch"
 import { open } from "node:fs/promises"
 import path from "node:path"
 import { readStdin, readStdinIfReady } from "../util/io"
 import { ServerConnection } from "../services/server-connection"
 import { createWorktreeLocation, parseSessionTargetModel, resolveSessionTarget } from "../session-target"
-import { toolInlineInfo } from "@opencode/tui/mini/tool"
+import { toolInlineInfo } from "@devcode/tui/mini/tool"
 import { runNonInteractivePrompt } from "./noninteractive"
 import { UI } from "./ui"
 import { Env } from "../env"
@@ -76,7 +76,7 @@ async function run(input: RunCommandInput, signal: AbortSignal) {
 }
 
 async function execute(input: RunCommandInput, prepared: Prepared, endpoint: Endpoint, signal: AbortSignal) {
-  const client = OpenCode.make({
+  const client = DevCode.make({
     baseUrl: endpoint.url,
     headers: Service.headers(endpoint),
     // Bun's default five-minute deadline terminates the event stream used by long-running sessions.

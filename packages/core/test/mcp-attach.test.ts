@@ -1,21 +1,21 @@
 import { expect } from "bun:test"
 import { InMemoryTransport, type JSONRPCMessage, type Transport } from "@modelcontextprotocol/client"
 import { McpServer } from "@modelcontextprotocol/server"
-import { ConfigMCP } from "@opencode/schema/config/mcp"
-import { McpEvent } from "@opencode/schema/mcp-event"
-import { Bus } from "@opencode/core/bus"
-import { Credential } from "@opencode/core/credential"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { Environment } from "@opencode/core/environment/index"
-import { Image } from "@opencode/core/image"
-import { Integration } from "@opencode/core/integration"
-import { Location } from "@opencode/core/location"
-import { Mcp } from "@opencode/core/mcp/index"
-import { Permission } from "@opencode/core/permission"
-import { Session } from "@opencode/core/session"
-import { Tool } from "@opencode/core/tool"
-import { McpTool } from "@opencode/core/tool/mcp"
-import { LayerNode } from "@opencode/util/effect/layer-node"
+import { ConfigMCP } from "@devcode/schema/config/mcp"
+import { McpEvent } from "@devcode/schema/mcp-event"
+import { Bus } from "@devcode/core/bus"
+import { Credential } from "@devcode/core/credential"
+import { AppNodeBuilder } from "@devcode/core/effect/app-node-builder"
+import { Environment } from "@devcode/core/environment/index"
+import { Image } from "@devcode/core/image"
+import { Integration } from "@devcode/core/integration"
+import { Location } from "@devcode/core/location"
+import { Mcp } from "@devcode/core/mcp/index"
+import { Permission } from "@devcode/core/permission"
+import { Session } from "@devcode/core/session"
+import { Tool } from "@devcode/core/tool"
+import { McpTool } from "@devcode/core/tool/mcp"
+import { LayerNode } from "@devcode/util/effect/layer-node"
 import { Effect, Exit, Layer, Schedule, Scope, Stream } from "effect"
 import { hostEnvironmentLayer } from "./fixture/environment"
 import { tempLocationLayer } from "./fixture/location"
@@ -61,7 +61,7 @@ const clientServer = (label: string, tools: ReadonlyArray<string>) =>
     const sessions: Array<unknown> = []
     for (const tool of tools)
       server.registerTool(tool, { description: `${label} ${tool}` }, (ctx) => {
-        sessions.push(ctx.mcpReq._meta?.["ai.opencode/sessionID"])
+        sessions.push(ctx.mcpReq._meta?.["ai.devcode/sessionID"])
         return { content: [{ type: "text", text: `${label}:${tool}` }] }
       })
     const [client, transport] = InMemoryTransport.createLinkedPair()

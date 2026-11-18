@@ -1,6 +1,6 @@
-export * as SessionSchema from "@opencode/schema/session"
+export * as SessionSchema from "@devcode/schema/session"
 
-import { Session } from "@opencode/schema/session"
+import { Session } from "@devcode/schema/session"
 
 export const ID = Session.ID
 export type ID = typeof ID.Type

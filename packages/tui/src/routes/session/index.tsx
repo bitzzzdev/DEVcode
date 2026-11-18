@@ -44,7 +44,7 @@ import {
   type SessionMessageUser,
   type SessionInfo,
   type ModelInfo,
-} from "@opencode/client"
+} from "@devcode/client"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { FilePath } from "../../ui/file-path"
@@ -118,9 +118,9 @@ import { switchLabel } from "../../util/model"
 import { findMessageBoundary, messageNavigationSlack } from "./message-navigation"
 import { stringWidth } from "../../util/string-width"
 import { useArgs } from "../../context/args"
-import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
-import { SessionTurn } from "@opencode/util/session-turn"
-import { TextBoundary } from "@opencode/util/text-boundary"
+import { withTimestampedFallback } from "@devcode/util/session-title-fallback"
+import { SessionTurn } from "@devcode/util/session-turn"
+import { TextBoundary } from "@devcode/util/text-boundary"
 import { useSessionTabs, type ScrollAnchor } from "../../context/session-tabs"
 import { createSingleFlight } from "../../util/single-flight"
 import { createDelayedPresence } from "../../util/delayed-presence"
@@ -646,7 +646,7 @@ export function Session(props: {
   onCleanup(() => {
     sessionDisposed = true
   })
-  // Restore the prompt when the free allowance or an OpenCode Go limit stops it, and offer OpenCode Go on the first free
+  // Restore the prompt when the free allowance or an DevCode Go limit stops it, and offer DevCode Go on the first free
   // allowance hit in a day.
   onCleanup(
     data.on("session.step.failed", async (event) => {
@@ -2538,7 +2538,7 @@ function FreeLimitNotice(props: { message: Pick<SessionMessageAssistant, "error"
     <box paddingLeft={3} flexDirection="column">
       <text fg={theme.text.muted}>You've used today's free messages.{reset() ? ` They reset at ${reset()}.` : ""}</text>
       <text fg={theme.text.muted}>
-        Upgrade to OpenCode Go → <span style={{ fg: theme.text.base }}>/connect</span> · Switch model →{" "}
+        Upgrade to DevCode Go → <span style={{ fg: theme.text.base }}>/connect</span> · Switch model →{" "}
         <span style={{ fg: theme.text.base }}>/models</span>
       </text>
     </box>

@@ -1,6 +1,6 @@
-import type { OpenCodeClient } from "@opencode/client"
-import type { CredentialApi, ExperimentalGenerateApi, PluginApi } from "@opencode/client/promise/api"
-import type { Location } from "@opencode/schema/location"
+import type { DevCodeClient } from "@devcode/client"
+import type { CredentialApi, ExperimentalGenerateApi, PluginApi } from "@devcode/client/promise/api"
+import type { Location } from "@devcode/schema/location"
 import type { PluginOptions } from "../options.js"
 import type { App } from "../app.js"
 import type { AgentDomain } from "./agent.js"
@@ -34,7 +34,7 @@ export interface Context {
   readonly credential: Pick<CredentialApi, "activate">
   readonly event: EventDomain
   readonly experimental: {
-    readonly terminal: Pick<OpenCodeClient["experimental"]["persistentPty"], "read">
+    readonly terminal: Pick<DevCodeClient["experimental"]["persistentPty"], "read">
     /** Stateless generation with a model and a prompt: no session, history or tools. Video jobs are server-only for now. */
     readonly generate: Omit<ExperimentalGenerateApi, "video">
     readonly artifact: ExperimentalArtifactDomain

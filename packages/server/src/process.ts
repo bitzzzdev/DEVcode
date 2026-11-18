@@ -1,15 +1,15 @@
 export * as ServerProcess from "./process"
 
 import { NodeHttpServer } from "@effect/platform-node"
-import { Bus } from "@opencode/core/bus"
-import { SessionRestart } from "@opencode/core/session/execution/restart"
-import { Automation } from "@opencode/core/automation"
-import { InstallationEvent } from "@opencode/schema/installation-event"
-import { hasPtyConnectTicketURL } from "@opencode/protocol/groups/pty"
-import { hasPersistentPtyConnectTicketURL } from "@opencode/protocol/groups/persistent-pty"
-import { hasMcpClientTicketURL } from "@opencode/protocol/groups/mcp"
-import { isPairingConnectURL } from "@opencode/protocol/groups/server"
-import { Global } from "@opencode/util/global"
+import { Bus } from "@devcode/core/bus"
+import { SessionRestart } from "@devcode/core/session/execution/restart"
+import { Automation } from "@devcode/core/automation"
+import { InstallationEvent } from "@devcode/schema/installation-event"
+import { hasPtyConnectTicketURL } from "@devcode/protocol/groups/pty"
+import { hasPersistentPtyConnectTicketURL } from "@devcode/protocol/groups/persistent-pty"
+import { hasMcpClientTicketURL } from "@devcode/protocol/groups/mcp"
+import { isPairingConnectURL } from "@devcode/protocol/groups/server"
+import { Global } from "@devcode/util/global"
 import { Cause, Context, Effect, Exit, Latch, Layer, Option, Ref, Scope } from "effect"
 import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { NetAddress } from "effect/net"
@@ -115,7 +115,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
         Effect.provideService(Scope.Scope, applicationScope),
       )
     }
-    // Automations run from any server process (`service`, `opencode serve`, or `--standalone`); the table holds all their state.
+    // Automations run from any server process (`service`, `devcode serve`, or `--standalone`); the table holds all their state.
     yield* Effect.forkIn(Context.get(context, Automation.Service).run, applicationScope)
     yield* Ref.set(application, Option.some(Context.get(context, HttpRouter.HttpRouter).asHttpEffect()))
     yield* status.ready
@@ -187,7 +187,7 @@ function dispatch(
   urls: () => ReadonlyArray<string>,
   tmp: string,
 ): App {
-  const auth = ServerAuth.Config.of({ password: Option.some(password), username: "opencode" })
+  const auth = ServerAuth.Config.of({ password: Option.some(password), username: "devcode" })
   return Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
     const url = new URL(request.url, "http://localhost")
@@ -232,7 +232,7 @@ function unavailable(status: Status.State) {
       {
         code: "service_failed",
         message: "The background service could not start.",
-        action: "Run `opencode service restart` after checking the service logs.",
+        action: "Run `devcode service restart` after checking the service logs.",
       },
       { status: 503 },
     )

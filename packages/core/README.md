@@ -1,3 +1,3 @@
-# @opencode/core
+# @devcode/core
 
-Core runtime services for OpenCode.
+Core runtime services for DevCode.

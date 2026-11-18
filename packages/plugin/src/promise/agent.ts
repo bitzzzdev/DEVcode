@@ -1,5 +1,5 @@
-import type { AgentApi } from "@opencode/client/promise/api"
-import type { Agent } from "@opencode/schema/agent"
+import type { AgentApi } from "@devcode/client/promise/api"
+import type { Agent } from "@devcode/schema/agent"
 import type { Types } from "effect"
 import type { Transform } from "./registration.js"
 

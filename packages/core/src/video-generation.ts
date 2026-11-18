@@ -1,10 +1,10 @@
 export * as VideoGeneration from "./video-generation.js"
 
-import { Media } from "@opencode/ai/effect"
-import { VideoID, type VideoJob, type VideoRequest, type VideoRunning } from "@opencode/schema/generate"
-import type { Model } from "@opencode/schema/model"
-import { makeGlobalNode } from "@opencode/util/effect/app-node"
-import { Global } from "@opencode/util/global"
+import { Media } from "@devcode/ai/effect"
+import { VideoID, type VideoJob, type VideoRequest, type VideoRunning } from "@devcode/schema/generate"
+import type { Model } from "@devcode/schema/model"
+import { makeGlobalNode } from "@devcode/util/effect/app-node"
+import { Global } from "@devcode/util/global"
 import { Context, Deferred, Duration, Effect, Exit, FiberMap, Layer, Option, Schedule, Schema } from "effect"
 import { BlobStore } from "./blob-store.js"
 import { Generate } from "./generate.js"
@@ -26,7 +26,7 @@ export interface Interface {
   readonly get: (id: VideoID) => Effect.Effect<VideoJob, NotFoundError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/VideoGeneration") {}
+export class Service extends Context.Service<Service, Interface>()("@devcode/VideoGeneration") {}
 
 /**
  * Running and failed jobs live in memory only: a restart forgets them, and a running job's videos are never collected.

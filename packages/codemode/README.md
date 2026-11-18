@@ -1,4 +1,4 @@
-# @opencode/codemode
+# @devcode/codemode
 
 This is our take on code mode: a lightweight, pure interpreter for a JavaScript-like language built around calling
 tools. It supports familiar JavaScript syntax with a few key differences and limitations. See the
@@ -27,7 +27,7 @@ Unsupported syntax returns an `UnsupportedSyntax` diagnostic with a source locat
 ## Quick Start
 
 ```ts
-import { CodeMode, Namespace, Tool } from "@opencode/codemode"
+import { CodeMode, Namespace, Tool } from "@devcode/codemode"
 import { Effect, Schema } from "effect"
 
 const lookupOrder = Tool.make({
@@ -299,7 +299,7 @@ create namespaces:
 
 ```ts
 const api = OpenAPI.fromSpec({ spec, auth: { resolve } })
-const runtime = CodeMode.make({ tools: { opencode: api.tools } })
+const runtime = CodeMode.make({ tools: { devcode: api.tools } })
 ```
 
 The synchronous result is `{ tools, skipped }`. Operations with unsupported parameter encodings, request bodies

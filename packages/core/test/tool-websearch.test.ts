@@ -1,23 +1,23 @@
 import { describe, expect } from "bun:test"
 import { Context, Effect, Layer } from "effect"
 import type { HttpClientError } from "effect/http"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Permission } from "@opencode/core/permission"
-import { KV } from "@opencode/core/kv"
-import { Form } from "@opencode/core/form"
-import { WebSearch } from "@opencode/core/websearch"
-import { Session } from "@opencode/core/session"
-import { toSessionError } from "@opencode/core/session/to-session-error"
-import { Tool } from "@opencode/core/tool"
-import { WebSearchTool } from "@opencode/core/tool/plugin/websearch"
-import { makeLocationNode } from "@opencode/util/effect/app-node"
+import { AppNodeBuilder } from "@devcode/core/effect/app-node-builder"
+import { LayerNode } from "@devcode/util/effect/layer-node"
+import { Permission } from "@devcode/core/permission"
+import { KV } from "@devcode/core/kv"
+import { Form } from "@devcode/core/form"
+import { WebSearch } from "@devcode/core/websearch"
+import { Session } from "@devcode/core/session"
+import { toSessionError } from "@devcode/core/session/to-session-error"
+import { Tool } from "@devcode/core/tool"
+import { WebSearchTool } from "@devcode/core/tool/plugin/websearch"
+import { makeLocationNode } from "@devcode/util/effect/app-node"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
 import { toolIdentity, executeTool, registerToolPlugin, toolDefinitions, toolNodeReplacements } from "./lib/tool"
 import { webSearchHost } from "./plugin/host"
 import { TestWebSearch } from "./lib/websearch"
-import type { SessionContext } from "@opencode/plugin/effect/session"
+import type { SessionContext } from "@devcode/plugin/effect/session"
 
 // The plugin's `context` hook, which edits the tools offered to the model.
 const contextHooks: ((event: SessionContext) => Effect.Effect<void>)[] = []
@@ -236,7 +236,7 @@ describe("WebSearchTool registration", () => {
           fields: [
             {
               key: "choice",
-              description: "Allow OpenCode to search the web for up-to-date information?",
+              description: "Allow DevCode to search the web for up-to-date information?",
               type: "string",
               required: true,
               custom: false,

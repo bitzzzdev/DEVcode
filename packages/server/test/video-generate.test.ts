@@ -1,9 +1,9 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { expect } from "bun:test"
-import { Generate } from "@opencode/core/generate"
-import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { Global } from "@opencode/util/global"
+import { Generate } from "@devcode/core/generate"
+import { makeLocationNode } from "@devcode/util/effect/app-node"
+import { Global } from "@devcode/util/global"
 import { Effect, Layer, Stream } from "effect"
 import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
@@ -36,7 +36,7 @@ const serve = (dir: string, enabled: boolean) =>
   ServerFetch.make(
     {
       app: { version: "test" },
-      database: { path: path.join(dir, "opencode.db") },
+      database: { path: path.join(dir, "devcode.db") },
       config: {
         directory: dir,
         project: false,
@@ -54,12 +54,12 @@ const serve = (dir: string, enabled: boolean) =>
     },
   )
 
-const base = "http://opencode.local/api/experimental"
+const base = "http://devcode.local/api/experimental"
 const unknown = `video_${"0".repeat(12)}${"A".repeat(14)}`
 
 it.live("generates a video in the background and serves its blob with Range and ETag support", () =>
   Effect.gen(function* () {
-    const dir = (yield* tmpdirScoped("opencode-video-route-")).path
+    const dir = (yield* tmpdirScoped("devcode-video-route-")).path
     const handler = yield* serve(dir, true)
     const call = (url: string, init?: RequestInit) => Effect.promise(() => handler(new Request(url, init)))
 
@@ -130,7 +130,7 @@ it.live("generates a video in the background and serves its blob with Range and 
 
 it.live("rejects video routes while experimental.video_generate is off", () =>
   Effect.gen(function* () {
-    const dir = (yield* tmpdirScoped("opencode-video-off-")).path
+    const dir = (yield* tmpdirScoped("devcode-video-off-")).path
     const handler = yield* serve(dir, false)
     const start = yield* Effect.promise(() =>
       handler(

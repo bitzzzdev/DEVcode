@@ -1,13 +1,13 @@
 import path from "node:path"
-import { OPENCODE_CHANNEL } from "./version"
+import { DEVCODE_CHANNEL } from "./version"
 
 export function databasePath(data: string) {
   const filename =
-    process.env.OPENCODE_DB ??
-    (["latest", "dev", "beta", "next", "prod"].includes(OPENCODE_CHANNEL) ||
-    process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
-    process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
-      ? "opencode.db"
-      : `opencode-${OPENCODE_CHANNEL.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
+    process.env.DEVCODE_DB ??
+    (["latest", "dev", "beta", "next", "prod"].includes(DEVCODE_CHANNEL) ||
+    process.env.DEVCODE_DISABLE_CHANNEL_DB === "1" ||
+    process.env.DEVCODE_DISABLE_CHANNEL_DB === "true"
+      ? "devcode.db"
+      : `devcode-${DEVCODE_CHANNEL.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
   return filename === ":memory:" ? filename : path.resolve(data, filename)
 }

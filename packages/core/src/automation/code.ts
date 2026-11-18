@@ -1,7 +1,7 @@
 export * as AutomationCode from "./code.js"
 
-import { CodeMode } from "@opencode/codemode"
-import { Automation } from "@opencode/schema/automation"
+import { CodeMode } from "@devcode/codemode"
+import { Automation } from "@devcode/schema/automation"
 import { Array, Effect, Option, Result, Schema } from "effect"
 import { Agent } from "../agent.js"
 import { CodeModeTool } from "../codemode/tool.js"
@@ -38,14 +38,14 @@ export function handoffOutput(delivery: string, logs?: string) {
 const FORBIDDEN_TOOLS = new Set([
   // Approving the shell tool unattended would approve every command, not a particular command.
   "shell",
-  "opencode.automation_create",
-  "opencode.automation_pause",
-  "opencode.automation_resume",
-  "opencode.automation_delete",
-  "opencode.session_move",
-  "opencode.session_rename",
-  "opencode.worktree_create",
-  "opencode.worktree_remove",
+  "devcode.automation_create",
+  "devcode.automation_pause",
+  "devcode.automation_resume",
+  "devcode.automation_delete",
+  "devcode.session_move",
+  "devcode.session_rename",
+  "devcode.worktree_create",
+  "devcode.worktree_remove",
 ])
 
 export interface RunInput {

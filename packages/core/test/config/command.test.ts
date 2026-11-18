@@ -3,30 +3,30 @@ import path from "path"
 import { describe, expect } from "bun:test"
 import { DateTime, Deferred, Effect, Fiber, Layer, Option, PubSub, Schema, Stream } from "effect"
 import { advance, drain } from "../lib/clock"
-import { Directory, Document, Event, Info } from "@opencode/schema/config"
-import { Session } from "@opencode/core/session"
-import { SessionExecution } from "@opencode/core/session/execution"
-import { Job } from "@opencode/core/job"
-import { SubagentJob } from "@opencode/core/session/subagent-job"
-import { Agent } from "@opencode/core/agent"
-import { SessionInbox } from "@opencode/schema/session-inbox"
-import { SessionMessage } from "@opencode/schema/session-message"
-import { Command } from "@opencode/core/command"
-import { Config } from "@opencode/core/config"
-import { ConfigCommandPlugin } from "@opencode/core/config/plugin/command"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { LayerNode } from "@opencode/util/effect/layer-node"
-import { FSUtil } from "@opencode/util/fs-util"
-import { Bus } from "@opencode/core/bus"
-import { Credential } from "@opencode/core/credential"
-import { WellKnown } from "@opencode/core/wellknown"
-import { Global } from "@opencode/util/global"
-import { AppProcess } from "@opencode/util/process"
-import { Location } from "@opencode/core/location"
-import { Mcp } from "@opencode/core/mcp/index"
-import { AbsolutePath } from "@opencode/core/schema"
-import { ShellSelect } from "@opencode/core/shell/select"
-import { Watcher } from "@opencode/core/filesystem/watcher"
+import { Directory, Document, Event, Info } from "@devcode/schema/config"
+import { Session } from "@devcode/core/session"
+import { SessionExecution } from "@devcode/core/session/execution"
+import { Job } from "@devcode/core/job"
+import { SubagentJob } from "@devcode/core/session/subagent-job"
+import { Agent } from "@devcode/core/agent"
+import { SessionInbox } from "@devcode/schema/session-inbox"
+import { SessionMessage } from "@devcode/schema/session-message"
+import { Command } from "@devcode/core/command"
+import { Config } from "@devcode/core/config"
+import { ConfigCommandPlugin } from "@devcode/core/config/plugin/command"
+import { AppNodeBuilder } from "@devcode/core/effect/app-node-builder"
+import { LayerNode } from "@devcode/util/effect/layer-node"
+import { FSUtil } from "@devcode/util/fs-util"
+import { Bus } from "@devcode/core/bus"
+import { Credential } from "@devcode/core/credential"
+import { WellKnown } from "@devcode/core/wellknown"
+import { Global } from "@devcode/util/global"
+import { AppProcess } from "@devcode/util/process"
+import { Location } from "@devcode/core/location"
+import { Mcp } from "@devcode/core/mcp/index"
+import { AbsolutePath } from "@devcode/core/schema"
+import { ShellSelect } from "@devcode/core/shell/select"
+import { Watcher } from "@devcode/core/filesystem/watcher"
 import { emptyCredentialNode, emptyWellknownNode } from "../fixture/config-nodes"
 import { emptyConfigLayer, emptyMcpLayer, testLocationLayer } from "../fixture/mcp"
 import { location } from "../fixture/location"
@@ -392,7 +392,7 @@ Review files`,
           )
 
           yield* configTest.emitChange({ type: "create", path: path.join(tmp.path, "notes", "todo.md") })
-          yield* configTest.emitChange({ type: "update", path: path.join(tmp.path, "opencode.json") })
+          yield* configTest.emitChange({ type: "update", path: path.join(tmp.path, "devcode.json") })
           yield* drain
           expect(reloads).toBe(0)
 
@@ -419,7 +419,7 @@ describeNative("ConfigCommandPlugin native watcher", () => {
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       // Watcher events report real paths, so resolve the tempdir symlink up front.
-      const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "opencode-core-test-" }).pipe(Effect.flatMap(fs.realPath))
+      const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "devcode-core-test-" }).pipe(Effect.flatMap(fs.realPath))
       const global = path.join(tmp, "global")
       yield* fs.makeDirectory(path.join(global, "commands"), { recursive: true })
       yield* fs.makeDirectory(path.join(tmp, "project"))

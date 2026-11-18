@@ -4,19 +4,19 @@ import { tmpdir } from "node:os"
 import path from "path"
 import { Clock, Deferred, Effect, Fiber, Logger, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import { Command } from "@opencode/core/command"
-import { Bus } from "@opencode/core/bus"
-import { Credential } from "@opencode/core/credential"
-import { Integration } from "@opencode/core/integration"
-import { Plugin } from "@opencode/core/plugin"
-import { PluginHost } from "@opencode/core/plugin/host"
-import { Rpc } from "@opencode/core/rpc"
-import { Event } from "@opencode/schema/config"
-import { PluginModule } from "@opencode/core/plugin/module"
-import { Session } from "@opencode/core/session"
-import { SessionSchema } from "@opencode/core/session/schema"
-import { Watcher } from "@opencode/core/filesystem/watcher"
-import { fromPromise } from "@opencode/plugin/promise/adapter"
+import { Command } from "@devcode/core/command"
+import { Bus } from "@devcode/core/bus"
+import { Credential } from "@devcode/core/credential"
+import { Integration } from "@devcode/core/integration"
+import { Plugin } from "@devcode/core/plugin"
+import { PluginHost } from "@devcode/core/plugin/host"
+import { Rpc } from "@devcode/core/rpc"
+import { Event } from "@devcode/schema/config"
+import { PluginModule } from "@devcode/core/plugin/module"
+import { Session } from "@devcode/core/session"
+import { SessionSchema } from "@devcode/core/session/schema"
+import { Watcher } from "@devcode/core/filesystem/watcher"
+import { fromPromise } from "@devcode/plugin/promise/adapter"
 import { testEffect } from "./lib/effect"
 import { PluginTestLayer } from "./plugin/fixture"
 
@@ -116,7 +116,7 @@ it.live("serves a local plugin's GUI bundle, and reloads it alone when only the 
     const bus = yield* Bus.Service
     yield* plugins.awaitActivation
     const directory = yield* Effect.acquireRelease(
-      Effect.promise(() => mkdtemp(path.join(tmpdir(), "opencode-plugin-gui-"))),
+      Effect.promise(() => mkdtemp(path.join(tmpdir(), "devcode-plugin-gui-"))),
       (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
     )
     const starts = path.join(directory, "starts")

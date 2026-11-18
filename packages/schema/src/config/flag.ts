@@ -1,11 +1,11 @@
 export * as ConfigFlag from "./flag.js"
 
-/** The `OPENCODE_FLAGS` entry that enables all flags except opt-in-only flags, as in `all,-media_blob`. */
+/** The `DEVCODE_FLAGS` entry that enables all flags except opt-in-only flags, as in `all,-media_blob`. */
 export const wildcard = "all"
 
 /**
  * Flags default to on in local and dev builds and off in releases, except for `optInOnly` flags, which must be
- * named explicitly in `experimental.<key>` or `OPENCODE_FLAGS`. Read a flag with Core's `Flag.enabled("<key>")`.
+ * named explicitly in `experimental.<key>` or `DEVCODE_FLAGS`. Read a flag with Core's `Flag.enabled("<key>")`.
  */
 export const registry = {
   todo: "Enable the experimental todowrite tool.",
@@ -15,17 +15,17 @@ export const registry = {
   artifacts: "Enable experimental artifacts backed by pluggable providers.",
   video_generate: "Enable the experimental video generation API.",
   console_watches:
-    "Watch Slack threads, GitHub pull requests, issues, commits and Actions runs, and the workspace's MCP servers' events through OpenCode Console, and wake sessions when they change.",
+    "Watch Slack threads, GitHub pull requests, issues, commits and Actions runs, and the workspace's MCP servers' events through DevCode Console, and wake sessions when they change.",
   mcp_events:
     "Enable experimental MCP Events, a draft MCP extension: declare support to MCP servers and read the events of servers that offer them.",
   full_codemode:
-    "Enable the full Code Mode work in progress. Off by default in every build, including local and dev; opt in with OPENCODE_FLAGS=full_codemode or experimental.full_codemode: true.",
+    "Enable the full Code Mode work in progress. Off by default in every build, including local and dev; opt in with DEVCODE_FLAGS=full_codemode or experimental.full_codemode: true.",
 } as const satisfies Record<string, string>
 export type Key = keyof typeof registry
 
 export const optInOnly: ReadonlySet<Key> = new Set(["full_codemode"])
 
-/** Earlier names of a flag, still read from `experimental.<name>` and `OPENCODE_FLAGS` when the new key is unset. */
+/** Earlier names of a flag, still read from `experimental.<name>` and `DEVCODE_FLAGS` when the new key is unset. */
 export const aliases = {
   schedules: "automations",
 } as const satisfies Record<string, Key>

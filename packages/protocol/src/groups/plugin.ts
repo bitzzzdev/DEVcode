@@ -1,5 +1,5 @@
-import { Location } from "@opencode/schema/location"
-import { Plugin } from "@opencode/schema/plugin"
+import { Location } from "@devcode/schema/location"
+import { Plugin } from "@devcode/schema/plugin"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { InvalidRequestError, PluginNotFoundError, ServiceUnavailableError } from "../errors.js"

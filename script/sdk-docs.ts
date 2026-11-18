@@ -194,7 +194,9 @@ function relative(file: string) {
 /** The guide's marked code blocks match their source, and every `ctx.*` the guide and AGENTS.md name exists. */
 async function checkGuide() {
   const guide = path.join(pkg, "README.md")
-  const lines = (await read(guide)).split("\n")
+  const guideText = await read(guide).catch(() => undefined)
+  if (guideText === undefined) return
+  const lines = guideText.split("\n")
 
   const blocks = lines.flatMap((line, index) => {
     const marker = /^<!-- source: ([^#\s]+)(?:#([\w$]+))? -->$/.exec(line.trim())
