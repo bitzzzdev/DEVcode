@@ -38,6 +38,46 @@ jobs:
           path: packages/cli/dist/cli-<< parameters.target >>
           destination: DEVcode-<< parameters.target >>
 
+  rust-check:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - rust-toolchain-v1
+      - run:
+          name: Ensure Rust 1.99.1 toolchain
+          command: |
+            if ! command -v rustc >/dev/null; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.99.1 --profile minimal
+            fi
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+      - save_cache:
+          key: rust-toolchain-v1
+          paths:
+            - ~/.rustup
+            - ~/.cargo
+      - run:
+          name: Install link toolchain
+          command: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential
+      - restore_cache:
+          keys:
+            - crates-target-v1-{{ checksum "crates/Cargo.lock" }}
+      - run:
+          name: Rust unit tests
+          command: cd crates && cargo test --locked
+      - run:
+          name: Build rust DEVcode
+          command: cd crates && cargo build --release --locked
+      - save_cache:
+          key: crates-target-v1-{{ checksum "crates/Cargo.lock" }}
+          paths:
+            - crates/target
+      - store_artifacts:
+          path: crates/target/release/DEVcode
+          destination: DEVcode-rust-linux-x64
+
 workflows:
   build:
     jobs:
@@ -52,3 +92,7 @@ workflows:
                 - linux-x64-baseline-musl
                 - linux-arm64
                 - linux-arm64-musl
+      - rust-check:
+          filters:
+            branches:
+              only: rust-port

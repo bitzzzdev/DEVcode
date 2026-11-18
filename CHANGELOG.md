@@ -7,6 +7,13 @@ Release notes for DevCode V2, newest first.
 > Entries below describe the upstream opencode releases this fork is based on; their issue and pull-request links
 > still point at upstream numbers and only resolve there. Fork-specific changes are listed under "Unreleased".
 
+## Unreleased (Rust port, branch `rust-port`)
+
+- Rust port of the TypeScript build began on branch `rust-port`. Version `0.1.0-rust`; every Rust build version carries `rust`. The Bun build ships unchanged as 0.0.1 and stays the supported binary until the port reaches parity.
+- `crates/` cargo workspace: `devcode` binary with `--version`, `serve [--service]`, and `service <status|start|stop|restart|get|set|unset>`; `devcode-service` with the managed-service config and registration formats, the `/api/info` health probe, and default ports (49376, `local` 49377; Bun build keeps 49375); `devcode-util` with the XDG layout. The service answers basic auth at `/api/info` using the same `devcode` username and the persisted `service.json` password, so Bun clients discover it, and its ~1.3 MB resident footprint is roughly 40 to 200x smaller than the Bun service.
+- Deliberate deviations: default port 49376 (Bun build keeps 49375, opencode keeps 49374); a healthy incumbent whose version does not contain `rust` is never replaced or killed by this build (`service stop --force` to override); `service remote` is not supported yet.
+- Not ported yet: TUI (ratatui), session core, tools, MCP, LSP, providers, JavaScript plugins (to become native Rust plugins), SDK codegen. `.circleci/config.yml` gains a `rust-check` job (`cargo test --locked`, release build, `DEVcode-rust-linux-x64` artifact) filtered to `rust-port`.
+
 ## Unreleased (DEVcode fork)
 
 - First fork release v0.0.1 (`gitlab.com/bitzzdev/DEVcode/-/releases`): six Linux binaries built by CircleCI from `dev` at `bed6586` (`DEVcode-linux-x64`, `-x64-baseline`, `-x64-musl`, `-x64-baseline-musl`, `-arm64`, `-arm64-musl`), plus `install.sh`, all attached to the GitLab release assets.

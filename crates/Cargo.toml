@@ -1,0 +1,11 @@
+# Cargo workspace for the ground-up Rust port of DEVcode.
+# Mirrors the package layout of the TypeScript build (packages/*) as crates/*.
+[workspace]
+resolver = "2"
+members = ["util", "service", "devcode"]
+
+[workspace.package]
+version = "0.1.0-rust"
+edition = "2021"
+license = "SEE LICENSE IN LICENSE"
+publish = false
