@@ -35,7 +35,7 @@ jobs:
             cd packages/cli
             DEVCODE_TARGET="<< parameters.target >>" bun run script/build.ts
       - store_artifacts:
-          path: packages/cli/dist/DEVcode-<< parameters.target >>
+          path: packages/cli/dist/cli-<< parameters.target >>
           destination: DEVcode-<< parameters.target >>
 
 workflows:
