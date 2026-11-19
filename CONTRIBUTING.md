@@ -7,40 +7,54 @@ New providers should rarely require DevCode changes. Add the provider to [models
 
 ## Development
 
-DEVcode requires the Bun version in the `packageManager` field of [`package.json`](./package.json) or newer. From the repository root:
+The active port is the Rust workspace under `crates/`. The TypeScript build under `packages/` stays frozen
+at v0.0.1 for compatibility; all new work happens on the `rust-port` branch.
+
+The Rust port needs [Bun](https://bun.sh) 1.4.4 (for the frozen TypeScript tooling) and
+[Rust](https://rustup.rs) 1.99.1 with the `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, and
+`aarch64-unknown-linux-musl` targets for cross builds.
+
+From the repository root:
 
 ```bash
 bun install
-bun dev [directory]
+cd crates
+cargo build --locked
 ```
 
-`bun dev` runs the V2 CLI and TUI. Pass a directory to open another project, or `.` to open this repository.
+`DEVcode run --help` prints the CLI surface; `DEVcode serve --help` the service flags.
 
-### Packages
+### Crates
 
-- `packages/schema`: shared wire and storage contracts
-- `packages/core`: domain behavior and persistence
-- `packages/protocol`: public API definitions
-- `packages/server`: HTTP server and runtime composition
-- `packages/client`: generated TypeScript clients
-- `packages/cli`: command-line entrypoint and service lifecycle
-- `packages/tui`: terminal interface
-- `packages/plugin`: plugin API
-- `packages/plugins/*`: built-in plugins
-- `packages/util`: shared utilities
+- `devcode`: binary, `serve`, `service`, `tui`, `run`, `mcp auth` subcommands
+- `devcode-core`: session core, durable event log, SQLite storage
+- `devcode-runner`: headless agent loop, tools, model streaming
+- `devcode-ai`: Anthropic and OpenAI-compatible provider clients
+- `devcode-mcp`: MCP client (stdio + Streamable HTTP), OAuth
+- `devcode-plugin`: native plugin host (cdylib + plugin.json)
+- `devcode-skills`: skill discovery and frontmatter
+- `devcode-tools`: builtin tools (read, write, edit, glob, grep, shell)
+- `devcode-tui`: ratatui terminal interface
+- `devcode-util`: XDG paths, helpers
+- `devcode-service`: managed-service config and registration
+- `devcode-plugin-figma`: Figma plugin cdylib
 
 ## Verification
 
-Run typechecks and tests from the affected package directory, never the repository root:
+Run tests and typecheck from the affected crate directory, never the repository root:
 
 ```bash
-cd packages/core
-bun run test
-bun typecheck
+cd crates
+cargo test --workspace --locked
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The canonical full lint and typecheck is `bun run check` from the repository root.
+The canonical full check is `cargo test --workspace --locked` from `crates/`. TypeScript typechecks remain
+under `packages/` via `bun run check` but are frozen.
 
-After changing the public Protocol or Server `HttpApi`, run `bun run generate` from `packages/client`; never edit generated client files directly.
+After changing the public Protocol or Server `HttpApi`, regenerate the SDK with `bun run generate` from
+`packages/client`; never edit generated client files directly. The Rust port does not ship an SDK; it serves
+the wire shapes directly from `serve.rs`.
 
-Follow the repository [style guide](./AGENTS.md).
+Follow the repository [style guide](./AGENTS.md) and the house rules in `crates/README.md`.

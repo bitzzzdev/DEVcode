@@ -20,6 +20,9 @@ services were removed to keep the binary small and the machine quiet.
 - **Terminal UI only.** No browser UI, no desktop app, no hosted services.
 - **Keyboard-first.** Mouse capture defaults to off. Turn it on with `"mouse": true` in the TUI config if you
   want it back.
+- **Rust native.** The binary is built with Rust (crates/), not TypeScript (packages/cli/), for a smaller,
+  faster footprint (1.3 MB vs 57 MB). The TypeScript (v0.0.1) is still shipped for compatibility but no longer
+  powers the service.
 - **Artifacts, not package managers.** Binaries come from CircleCI build artifacts. There is no npm package,
   brew formula, winget entry, or install script for this fork, and the built-in update check reports the
   [releases page](https://gitlab.com/bitzzdev/DEVcode/-/releases) instead of phoning a dead update service.
@@ -28,16 +31,16 @@ services were removed to keep the binary small and the machine quiet.
 
 ## Installation
 
-Binaries are built and stored as artifacts by CircleCI (see the `build` workflow in `.circleci/config.yml`). Each build
-uploads `packages/cli/dist/DEVcode-<target>`; download the artifact for your platform:
+Binaries are built and stored as artifacts by CircleCI (see the `rust-dist` workflow in `.circleci/config.yml`). Each build
+uploads `DEVcode-rust-<target>`; download the artifact for your platform:
 
 | Platform            | Artifact directory          |
 | ------------------- | --------------------------- |
-| Linux x64 (glibc)   | `DEVcode-linux-x64`         |
-| Linux x64 (baseline CPU, no AVX2) | `DEVcode-linux-x64-baseline` |
-| Linux x64 (musl)  | `DEVcode-linux-x64-musl`    |
-| Linux arm64 (glibc) | `DEVcode-linux-arm64`       |
-| Linux arm64 (musl)  | `DEVcode-linux-arm64-musl`  |
+| Linux x64 (glibc)   | `DEVcode-rust-linux-x64`         |
+| Linux x64 (baseline CPU, no AVX2) | `DEVcode-rust-linux-x64-baseline` |
+| Linux x64 (musl)  | `DEVcode-rust-linux-x64-musl`    |
+| Linux arm64 (glibc) | `DEVcode-rust-linux-arm64`       |
+| Linux arm64 (musl)  | `DEVcode-rust-linux-arm64-musl`  |
 
 Place the `DEVcode` binary on your `$PATH` and run `DEVcode` inside a project directory.
 
@@ -47,23 +50,24 @@ Place the `DEVcode` binary on your `$PATH` and run `DEVcode` inside a project di
 # The repository is public, so downloads are anonymous. The script detects
 # the platform, downloads the matching binary, verifies SHA-256, and
 # installs it.
-curl -fsSL https://gitlab.com/bitzzdev/DEVcode/-/raw/dev/install.sh | sh -s -- v0.0.1
+curl -fsSL https://gitlab.com/bitzzdev/DEVcode/-/raw/rust-port/install.sh | sh -s -- 0.1.0-rust
 ```
 
 ### Building from source
 
-Requires [Bun](https://bun.sh) 1.4.4.
+Requires [Bun](https://bun.sh) 1.4.4 and [Rust](https://rustup.rs) 1.99.1.
 
 ```bash
 git clone https://gitlab.com/bitzzdev/DEVcode.git
 cd DEVcode
 bun install
-cd packages/cli
-DEVCODE_TARGET=linux-x64 bun run script/build.ts
+cd crates
+cargo build --release --locked --target x86_64-unknown-linux-gnu
 ```
 
-`DEVCODE_TARGET` selects one output from `packages/cli/script/build.ts` (`linux-x64`, `linux-arm64`, the musl
-and baseline variants above); `bun run script/build.ts --single` builds for the machine you are on.
+The Rust binary lives at `crates/target/<triple>/release/DEVcode`. `cargo build --release --locked` builds for the
+host triple; pass `--target` for cross-compilation (see `crates/Cargo.toml` for the release profile). The
+`rust-dist` CI job builds all six targets on push to `rust-port`.
 
 ## Agents
 
