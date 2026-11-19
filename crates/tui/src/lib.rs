@@ -12,7 +12,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use serde_json::{json, Value};
 
@@ -22,6 +22,23 @@ const SESSION_PAGE: &str = "/api/session?order=desc&limit=20";
 pub struct SessionRow {
     pub id: String,
     pub title: String,
+}
+
+pub struct McpRow {
+    pub name: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub integration_id: Option<String>,
+}
+
+/// The /mcps overlay. The Rust service reports a config-derived status
+/// (never connected/failed), and has no connect/disconnect API, so this is
+/// a read-only view with a sign-in hint for OAuth-gated servers.
+pub struct McpDialog {
+    pub servers: Vec<McpRow>,
+    pub selected: usize,
+    pub detail: bool,
+    pub error: Option<String>,
 }
 
 pub struct App {
@@ -36,6 +53,7 @@ pub struct App {
     model: Option<String>,
     status: String,
     status_err: bool,
+    mcp: Option<McpDialog>,
     // number of messages last seen for the selected session; poll rebuilds on change
     seen_len: usize,
     last_sessions_refresh: Instant,
@@ -69,6 +87,7 @@ pub fn run() -> ExitCode {
             .filter(|value| !value.trim().is_empty()),
         status: String::new(),
         status_err: false,
+        mcp: None,
         seen_len: usize::MAX,
         last_sessions_refresh: Instant::now() - Duration::from_secs(60),
         last_messages_refresh: Instant::now() - Duration::from_secs(60),
@@ -162,6 +181,53 @@ fn http_error(error: ureq::Error) -> String {
             format!("HTTP {code}: {message}")
         }
         ureq::Error::Transport(transport) => format!("service unreachable: {transport}"),
+    }
+}
+
+/// Parse the /api/mcp wire into rows. Pure; tested.
+pub fn mcp_rows(body: &Value) -> Vec<McpRow> {
+    body.get("data")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .map(|row| {
+                    let status = row
+                        .get("status")
+                        .and_then(|status| status.get("status"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_owned();
+                    McpRow {
+                        name: row
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        error: row
+                            .get("status")
+                            .and_then(|status| status.get("error"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        status,
+                        integration_id: row
+                            .get("integrationID")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn mcp_status_label(status: &str) -> &'static str {
+    match status {
+        "connected" => "Connected ✓",
+        "pending" => "Connecting…",
+        "failed" => "Failed !",
+        "disabled" => "Disabled ○",
+        "needs_auth" => "Sign in required →",
+        _ => "Unknown",
     }
 }
 
@@ -355,6 +421,11 @@ impl App {
                 self.create_session();
                 return;
             }
+            "mcps" | "mcp" => {
+                self.input.clear();
+                self.open_mcp();
+                return;
+            }
             "model" => {
                 if argument.is_empty() {
                     self.set_status(
@@ -390,6 +461,20 @@ impl App {
             Ok(_) => {
                 self.set_status("sent".to_owned(), false);
                 self.last_messages_refresh = Instant::now() - Duration::from_secs(60);
+            }
+            Err(error) => self.set_status(error, true),
+        }
+    }
+
+    fn open_mcp(&mut self) {
+        match http_get(self, "/api/mcp") {
+            Ok(body) => {
+                self.mcp = Some(McpDialog {
+                    servers: mcp_rows(&body),
+                    selected: 0,
+                    detail: false,
+                    error: None,
+                });
             }
             Err(error) => self.set_status(error, true),
         }
@@ -477,7 +562,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .model
         .as_deref()
         .unwrap_or("model unset (/model provider/model)");
-    let help = " ↑↓ sessions · Enter send · /new · PgUp/PgDn scroll · Ctrl-C quit";
+    let help = " ↑↓ sessions · Enter send · /new /mcps · PgUp/PgDn scroll · Ctrl-C quit";
     let status_line = if app.status.is_empty() {
         format!(" {model}{help}")
     } else {
@@ -489,6 +574,158 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Style::default().fg(Color::DarkGray)
     };
     frame.render_widget(Paragraph::new(status_line).style(style), root[1]);
+
+    if app.mcp.is_some() {
+        draw_mcp(frame, app);
+    }
+}
+
+fn draw_mcp(frame: &mut Frame<'_>, app: &mut App) {
+    let Some(dialog) = &app.mcp else {
+        return;
+    };
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).clamp(36, 68);
+    let height = area.height.saturating_sub(4).clamp(8, 20);
+    let rect = ratatui::layout::Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" MCP servers ({}) ", dialog.servers.len()));
+
+    if dialog.detail {
+        let content = mcp_detail_text(dialog);
+        let body = Paragraph::new(content)
+            .block(block.title(format!(" MCP server: {} ", dialog.servers[dialog.selected].name)))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(body, rect);
+        return;
+    }
+
+    if dialog.servers.is_empty() {
+        let empty = Paragraph::new(
+            "No MCP servers configured.\n\nAdd [mcp.servers] entries to devcode.jsonc, or install an MCP plugin.\nEsc to close.",
+        )
+        .block(block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(empty, rect);
+        return;
+    }
+
+    let items: Vec<ListItem> = dialog
+        .servers
+        .iter()
+        .map(|server| {
+            let dot_color = match server.status.as_str() {
+                "connected" => Color::Green,
+                "pending" => Color::Yellow,
+                "failed" => Color::Red,
+                "needs_auth" => Color::Yellow,
+                "disabled" => Color::DarkGray,
+                _ => Color::Gray,
+            };
+            let label_color = match server.status.as_str() {
+                "failed" => Color::Red,
+                "needs_auth" => Color::Yellow,
+                "connected" => Color::Green,
+                _ => Color::DarkGray,
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled("● ", Style::default().fg(dot_color)),
+                Span::styled(server.name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw("  "),
+                Span::styled(mcp_status_label(&server.status), Style::default().fg(label_color)),
+            ]))
+        })
+        .collect();
+    let mut list_state = ListState::default();
+    list_state.select(Some(dialog.selected.min(dialog.servers.len().saturating_sub(1))));
+    let list = List::new(items)
+        .block(block.title_bottom(" ↑↓ select · Enter details · Esc close "))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("");
+    frame.render_stateful_widget(list, rect, &mut list_state);
+}
+
+fn mcp_detail_text(dialog: &McpDialog) -> String {
+    let Some(server) = dialog.servers.get(dialog.selected) else {
+        return String::new();
+    };
+    let status_label = match server.status.as_str() {
+        "connected" => "Connected",
+        "pending" => "Connecting",
+        "failed" => "Failed",
+        "disabled" => "Disabled",
+        "needs_auth" => "Sign in required",
+        other => other,
+    };
+    let mut lines = vec![format!("Status: {status_label}")];
+    if let Some(integration_id) = &server.integration_id {
+        lines.push(format!("Integration: {integration_id}"));
+    }
+    if dialog.error.as_deref().is_some_and(|error| !error.is_empty()) {
+        lines.push(String::new());
+        lines.push(dialog.error.clone().unwrap_or_default());
+    } else if let Some(error) = &server.error {
+        lines.push(String::new());
+        lines.push(error.clone());
+    }
+    if server.status == "needs_auth" {
+        lines.push(String::new());
+        lines.push(format!("Run: DEVcode mcp auth {}", server.name));
+    } else if server.status == "pending" {
+        lines.push(String::new());
+        lines.push("Rust MCP connections are opened per run.".to_owned());
+    }
+    lines.push(String::new());
+    lines.push("Esc to go back".to_owned());
+    lines.join("\n")
+}
+
+fn handle_mcp_key(app: &mut App, code: crossterm::event::KeyCode) {
+    use crossterm::event::KeyCode;
+    match code {
+        KeyCode::Esc => {
+            if app.mcp.as_ref().is_some_and(|dialog| dialog.detail) {
+                if let Some(dialog) = app.mcp.as_mut() {
+                    dialog.detail = false;
+                }
+            } else {
+                app.mcp = None;
+            }
+        }
+        KeyCode::Up | KeyCode::Down => {
+            let delta: isize = if code == KeyCode::Up { -1 } else { 1 };
+            if let Some(dialog) = app.mcp.as_mut() {
+                if dialog.detail || dialog.servers.is_empty() {
+                    return;
+                }
+                let last = dialog.servers.len() as isize - 1;
+                dialog.selected = (dialog.selected as isize + delta).clamp(0, last) as usize;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(dialog) = app.mcp.as_mut() {
+                if dialog.servers.is_empty() {
+                    return;
+                }
+                dialog.detail = !dialog.detail;
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(dialog) = app.mcp.as_mut() {
+                if dialog.detail {
+                    dialog.detail = false;
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn event_loop(app: &mut App, stdout: &mut Stdout) -> Result<(), Box<dyn std::error::Error>> {
@@ -506,10 +743,15 @@ fn event_loop(app: &mut App, stdout: &mut Stdout) -> Result<(), Box<dyn std::err
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
+                    let quit = matches!(key.code, KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL));
+                    if quit {
+                        return Ok(())
+                    }
+                    if app.mcp.is_some() {
+                        handle_mcp_key(app, key.code);
+                        continue;
+                    }
                     match key.code {
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            return Ok(())
-                        }
                         KeyCode::Char(character) => app.input.push(character),
                         KeyCode::Backspace => {
                             app.input.pop();
@@ -602,6 +844,7 @@ mod tests {
             model: Some("openai/x".to_owned()),
             status: String::new(),
             status_err: false,
+            mcp: None,
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
@@ -630,5 +873,95 @@ mod tests {
         assert_eq!(parse_command("just a prompt"), ("", "just a prompt"));
         assert_eq!(parse_command("   "), ("", ""));
         assert_eq!(parse_command("/quit"), ("quit", ""));
+        assert_eq!(parse_command("/mcps"), ("mcps", ""));
+    }
+
+    #[test]
+    fn mcp_rows_parse_wire() {
+        let body = json!({
+            "data": [
+                { "name": "figma", "status": { "status": "needs_auth", "error": "auth required" }, "integrationID": "mcp_deadbeef" },
+                { "name": "local", "status": { "status": "pending" } },
+                { "name": "dormant", "status": { "status": "disabled" } },
+            ]
+        });
+        let rows = mcp_rows(&body);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].name, "figma");
+        assert_eq!(rows[0].status, "needs_auth");
+        assert_eq!(rows[0].error.as_deref(), Some("auth required"));
+        assert_eq!(rows[0].integration_id.as_deref(), Some("mcp_deadbeef"));
+        assert_eq!(rows[1].status, "pending");
+        assert_eq!(rows[1].integration_id, None);
+        assert_eq!(rows[2].status, "disabled");
+        assert_eq!(mcp_rows(&json!({})).len(), 0);
+        assert_eq!(mcp_rows(&json!({ "data": null })).len(), 0);
+    }
+
+    #[test]
+    fn renders_mcp_dialog() {
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            sessions: vec![],
+            selected: 0,
+            transcript: vec!["you › hi".to_owned()],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: Some(McpDialog {
+                servers: vec![
+                    McpRow {
+                        name: "figma".to_owned(),
+                        status: "needs_auth".to_owned(),
+                        error: Some("MCP server \"figma\" requires OAuth authentication. Run: DEVcode mcp auth figma".to_owned()),
+                        integration_id: Some("mcp_deadbeef".to_owned()),
+                    },
+                    McpRow {
+                        name: "notes".to_owned(),
+                        status: "pending".to_owned(),
+                        error: None,
+                        integration_id: None,
+                    },
+                ],
+                selected: 0,
+                detail: false,
+                error: None,
+            }),
+            seen_len: 1,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("MCP servers (2)"), "dialog title missing: {text}");
+        assert!(text.contains("figma"), "figma row missing: {text}");
+        assert!(text.contains("Sign in required"), "needs_auth label missing: {text}");
+        assert!(text.contains("notes"), "pending row missing: {text}");
+        assert!(text.contains("Connecting"), "pending label missing: {text}");
+
+        // The detail view shows the integration and the auth hint.
+        app.mcp.as_mut().unwrap().detail = true;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("mcp_deadbeef"), "integration id missing: {text}");
+        assert!(text.contains("DEVcode mcp auth figma"), "auth hint missing: {text}");
     }
 }
