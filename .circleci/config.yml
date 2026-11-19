@@ -222,8 +222,8 @@ workflows:
           target: linux-x64-musl
           triple: x86_64-unknown-linux-musl
           apt: musl-tools
-          linker: ""
-          rustflags: "-C target-cpu=x86-64-v3 -C target-feature=+crt-static"
+          linker: musl-gcc
+          rustflags: "-C target-cpu=x86-64-v3"
           smoke: true
           filters:
             branches:
@@ -233,8 +233,7 @@ workflows:
           target: linux-x64-baseline-musl
           triple: x86_64-unknown-linux-musl
           apt: musl-tools
-          linker: ""
-          rustflags: "-C target-feature=+crt-static"
+          linker: musl-gcc
           smoke: true
           filters:
             branches:
@@ -252,10 +251,8 @@ workflows:
           name: DEVcode-rust-linux-arm64-musl
           target: linux-arm64-musl
           triple: aarch64-unknown-linux-musl
-          apt: ""
-          musl_cc: true
-          linker: ""
-          rustflags: "-C target-feature=+crt-static"
+          apt: gcc-aarch64-linux-musl
+          linker: aarch64-linux-musl-gcc
           filters:
             branches:
               only: rust-port
