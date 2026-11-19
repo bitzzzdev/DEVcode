@@ -321,16 +321,24 @@ fn load_mcp_runtime(paths: &devcode_util::Paths, plugins: &devcode_plugin::Host)
 
 /// User config wins on name conflict; plugin contributions fill the gaps.
 pub fn merge_plugin_mcp_servers(
-    mut servers: std::collections::BTreeMap<String, devcode_mcp::ServerConfig>,
+    servers: std::collections::BTreeMap<String, devcode_mcp::ServerConfig>,
     plugins: &devcode_plugin::Host,
 ) -> std::collections::BTreeMap<String, devcode_mcp::ServerConfig> {
-    for (name, spec) in plugins.mcp_servers() {
-        if servers.contains_key(&name) {
+    merge_contributed_servers(servers, &plugins.mcp_servers())
+}
+
+/// Same merge for contribution lists collected elsewhere (e.g. cached at startup).
+pub fn merge_contributed_servers(
+    mut servers: std::collections::BTreeMap<String, devcode_mcp::ServerConfig>,
+    contributed: &[(String, serde_json::Value)],
+) -> std::collections::BTreeMap<String, devcode_mcp::ServerConfig> {
+    for (name, spec) in contributed {
+        if servers.contains_key(name) {
             continue;
         }
-        match devcode_mcp::parse_server(&name, &spec) {
+        match devcode_mcp::parse_server(name, spec) {
             Some(server) => {
-                servers.insert(name, server);
+                servers.insert(name.clone(), server);
             }
             None => eprintln!("plugin contributed an unusable mcp server entry: {name}"),
         }

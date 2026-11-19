@@ -19,15 +19,98 @@ static RUNNING: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
 /// Plugin listings in the Bun `Plugin.Info` wire shape, loaded once at service startup
 /// from `<config>/plugins/*/plugin.json` (native Rust cdylib plugins).
 static PLUGIN_LIST: std::sync::OnceLock<Vec<serde_json::Value>> = std::sync::OnceLock::new();
+static MCP_PLUGIN_SERVERS: std::sync::OnceLock<Vec<(String, serde_json::Value)>> = std::sync::OnceLock::new();
 
 fn plugin_list() -> &'static [serde_json::Value] {
     PLUGIN_LIST.get().map(Vec::as_slice).unwrap_or(&[])
 }
 
-fn load_plugins(paths: &devcode_util::Paths) -> Vec<serde_json::Value> {
+fn mcp_plugin_servers() -> &'static [(String, serde_json::Value)] {
+    MCP_PLUGIN_SERVERS.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// The /api/mcp listing (Bun's `mcp.list`). The Rust MCP connections are opened
+/// per run, so there is no live registry to report; the status is derived from the
+/// configuration and the credential store instead: disabled servers report
+/// `disabled`, OAuth remotes without a stored usable credential report
+/// `needs_auth` with the same message the connect path produces, and everything
+/// that could be connected reports `pending`. `integrationID` is attached for
+/// every OAuth remote (Bun registers the integration regardless of disabled state).
+/// The envelope is `{ "data": [...] }` (documented deviation: no Bun `location` half).
+fn mcp_list(paths: &devcode_util::Paths, contributed: &[(String, serde_json::Value)]) -> Vec<serde_json::Value> {
+    let config = match devcode_mcp::load_config(&paths.config.join("devcode.jsonc")) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("failed to load mcp config: {error}");
+            devcode_mcp::McpConfig::default()
+        }
+    };
+    let servers = devcode_runner::merge_contributed_servers(config.servers, contributed);
+    let has_oauth_remote = servers
+        .values()
+        .any(|server| matches!(server, devcode_mcp::ServerConfig::Remote(remote) if remote.needs_oauth));
+    let store = if has_oauth_remote {
+        match devcode_mcp::oauth::CredentialStore::open(&devcode_core::database_path(paths).to_string_lossy()) {
+            Ok(store) => Some(store),
+            Err(error) => {
+                eprintln!("failed to open credential store: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    servers
+        .into_iter()
+        .map(|(name, server)| {
+            let disabled = match &server {
+                devcode_mcp::ServerConfig::Local(local) => local.disabled,
+                devcode_mcp::ServerConfig::Remote(remote) => remote.disabled,
+            };
+            let oauth_integration = match &server {
+                devcode_mcp::ServerConfig::Remote(remote) if remote.needs_oauth => {
+                    Some(devcode_mcp::oauth::CredentialStore::integration_id(&name, &remote.url))
+                }
+                _ => None,
+            };
+            let status = if disabled {
+                json!({ "status": "disabled" })
+            } else if let Some(integration_id) = &oauth_integration {
+                let has_credential = store
+                    .as_ref()
+                    .and_then(|store| store.get(integration_id).ok().flatten())
+                    .is_some();
+                if has_credential {
+                    json!({ "status": "pending" })
+                } else {
+                    json!({
+                        "status": "needs_auth",
+                        "error": format!(
+                            "MCP server \"{name}\" requires OAuth authentication. Run: DEVcode mcp auth {name}"
+                        ),
+                    })
+                }
+            } else {
+                json!({ "status": "pending" })
+            };
+            let mut entry = serde_json::Map::new();
+            entry.insert("name".into(), json!(name));
+            entry.insert("status".into(), status);
+            if let Some(integration_id) = oauth_integration {
+                entry.insert("integrationID".into(), json!(integration_id));
+            }
+            serde_json::Value::Object(entry)
+        })
+        .collect()
+}
+
+/// Load the native plugins once at startup and return both halves: the /api/plugin
+/// listing and the MCP servers contributed by plugins (cached so /api/mcp can merge
+/// them without re-loading native code per request).
+fn load_plugins(paths: &devcode_util::Paths) -> (Vec<serde_json::Value>, Vec<(String, serde_json::Value)>) {
     let dir = paths.config.join("plugins");
     if !dir.is_dir() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let mut host = devcode_plugin::Host::empty();
     // Native code from the user's own plugins directory, same trust level as the
@@ -37,7 +120,7 @@ fn load_plugins(paths: &devcode_util::Paths) -> Vec<serde_json::Value> {
         eprintln!("plugin failed to load: {error}");
     }
     let infos = host.list();
-    infos
+    let list = infos
         .iter()
         .map(|plugin| {
             json!({
@@ -55,7 +138,8 @@ fn load_plugins(paths: &devcode_util::Paths) -> Vec<serde_json::Value> {
                 "state": { "status": "failed", "error": error },
             })
         }))
-        .collect()
+        .collect();
+    (list, host.mcp_servers())
 }
 
 fn running_insert(session_id: &str) -> bool {
@@ -130,7 +214,9 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let _ = PLUGIN_LIST.set(load_plugins(&paths));
+    let (plugin_list, mcp_plugin_servers_cache) = load_plugins(&paths);
+    let _ = PLUGIN_LIST.set(plugin_list);
+    let _ = MCP_PLUGIN_SERVERS.set(mcp_plugin_servers_cache);
 
     let addr = format!("{hostname}:{port}");
     let server = match Server::http(&addr) {
@@ -185,7 +271,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 
     for request in server.incoming_requests() {
-        handle(request, &info, &password, &mut database.conn);
+        handle(request, &info, &password, &mut database.conn, &paths);
     }
     ExitCode::SUCCESS
 }
@@ -195,6 +281,7 @@ fn handle(
     info: &serde_json::Value,
     password: &str,
     conn: &mut rusqlite::Connection,
+    paths: &devcode_util::Paths,
 ) {
     if !authorized(&request, password) {
         let body = json!({"_tag": "UnauthorizedError", "message": "Authentication required"});
@@ -220,7 +307,7 @@ fn handle(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0);
-    let (status, payload) = route(&method, &path, &query, &body, conn, info, now);
+    let (status, payload) = route(&method, &path, &query, &body, conn, info, now, paths);
     match payload {
         Some(payload) => respond(request, status, payload),
         None => {
@@ -1089,6 +1176,7 @@ fn route(
     conn: &mut rusqlite::Connection,
     info: &serde_json::Value,
     now: i64,
+    paths: &devcode_util::Paths,
 ) -> (u16, Option<serde_json::Value>) {
     let owned: Vec<String> = path
         .split('/')
@@ -1108,6 +1196,7 @@ fn route(
         ("POST", ["api", "session", id, "prompt"]) => prompt_session(id, body, conn, now),
         ("GET", ["api", "session", id, "message"]) => list_messages(id, &params, conn),
         ("GET", ["api", "plugin"]) => (200, Some(json!({ "data": plugin_list() }))),
+        ("GET", ["api", "mcp"]) => (200, Some(json!({ "data": mcp_list(paths, mcp_plugin_servers()) }))),
         _ => (404, Some(json!({"message": "Not Found"}))),
     }
 }
@@ -1152,7 +1241,7 @@ fn openapi() -> serde_json::Value {
         "info": {
             "title": "devcode HttpApi",
             "version": devcode_util::VERSION,
-            "description": "Rust port of the DEVcode HttpApi surface. Served so far: /api/info, /api/session, /api/session/{sessionID}, /api/session/{sessionID}/message.",
+            "description": "Rust port of the DEVcode HttpApi surface. Served so far: /api/info, /api/session, /api/session/{sessionID}, /api/session/{sessionID}/message, /api/plugin, /api/mcp.",
         },
         "paths": {
             "/api/info": {
@@ -1199,6 +1288,14 @@ fn openapi() -> serde_json::Value {
                     "responses": { "200": { "description": "Enabled plugins" } },
                 },
             },
+            "/api/mcp": {
+                "get": {
+                    "tags": ["mcp"],
+                    "summary": "List MCP servers",
+                    "description": "Configured MCP servers (user config plus plugin contributions) with a status derived from configuration and the credential store: disabled, needs_auth (OAuth remote without a stored credential), or pending. Rust connections are opened per run, so no live connected state is reported.",
+                    "responses": { "200": { "description": "Configured MCP servers" } },
+                },
+            },
             "/api/session/{sessionID}/prompt": {
                 "post": {
                     "tags": ["session"],
@@ -1223,11 +1320,12 @@ mod tests {
     use super::*;
     use devcode_core::session_message;
     use serde_json::{json, Value};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     struct TestDb {
         dir: PathBuf,
         db: devcode_core::Database,
+        paths: devcode_util::Paths,
     }
 
     impl Drop for TestDb {
@@ -1236,14 +1334,31 @@ mod tests {
         }
     }
 
+    fn test_paths(dir: &Path) -> devcode_util::Paths {
+        std::fs::create_dir_all(dir).unwrap();
+        let paths = devcode_util::Paths {
+            home: dir.join("home"),
+            data: dir.to_path_buf(),
+            cache: dir.join("cache"),
+            config: dir.join("config"),
+            state: dir.join("state"),
+            tmp: dir.join("tmp"),
+        };
+        std::fs::create_dir_all(&paths.config).unwrap();
+        paths
+    }
+
     fn temp_db(tag: &str) -> TestDb {
         let dir = std::env::temp_dir().join(format!("devcode-http-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = devcode_core::Database::open(&dir.join("devcode.db")).unwrap();
-        TestDb { dir, db }
+        let paths = test_paths(&dir);
+        TestDb { dir, db, paths }
     }
 
     fn call(
+        paths: &devcode_util::Paths,
         conn: &mut rusqlite::Connection,
         method: &str,
         path: &str,
@@ -1259,6 +1374,7 @@ mod tests {
             conn,
             &json!({"version": "test"}),
             now,
+            paths,
         )
     }
 
@@ -1266,20 +1382,21 @@ mod tests {
     fn create_get_list_patch_delete_roundtrip() {
         let mut t = temp_db("roundtrip");
         let c = &mut t.db.conn;
-        let (status, body) = call(c, "POST", "/api/session", "", r#"{"title": "hello"}"#, 1000);
+        let (status, body) = call(&t.paths, c, "POST", "/api/session", "", r#"{"title": "hello"}"#, 1000);
         assert_eq!(status, 200);
         let id = body.unwrap()["data"]["id"].as_str().unwrap().to_owned();
         assert!(id.starts_with("ses_"));
 
-        let (status, body) = call(c, "GET", &format!("/api/session/{id}"), "", "", 1001);
+        let (status, body) = call(&t.paths, c, "GET", &format!("/api/session/{id}"), "", "", 1001);
         assert_eq!(status, 200);
         assert_eq!(body.unwrap()["data"]["title"], "hello");
 
-        let (status, body) = call(c, "GET", "/api/session", "", "", 1002);
+        let (status, body) = call(&t.paths, c, "GET", "/api/session", "", "", 1002);
         assert_eq!(status, 200);
         assert_eq!(body.unwrap()["data"].as_array().unwrap().len(), 1);
 
         let (status, _) = call(
+            &t.paths,
             c,
             "PATCH",
             &format!("/api/session/{id}"),
@@ -1288,10 +1405,11 @@ mod tests {
             1003,
         );
         assert_eq!(status, 204);
-        let (_, body) = call(c, "GET", &format!("/api/session/{id}"), "", "", 1004);
+        let (_, body) = call(&t.paths, c, "GET", &format!("/api/session/{id}"), "", "", 1004);
         assert_eq!(body.unwrap()["data"]["title"], "renamed");
 
         let (status, _) = call(
+            &t.paths,
             c,
             "PATCH",
             &format!("/api/session/{id}"),
@@ -1300,14 +1418,14 @@ mod tests {
             1005,
         );
         assert_eq!(status, 204);
-        let (_, body) = call(c, "GET", "/api/session", "archived=true", "", 1006);
+        let (_, body) = call(&t.paths, c, "GET", "/api/session", "archived=true", "", 1006);
         assert_eq!(body.as_ref().unwrap()["data"].as_array().unwrap().len(), 1);
-        let (_, body) = call(c, "GET", "/api/session", "archived=false", "", 1007);
+        let (_, body) = call(&t.paths, c, "GET", "/api/session", "archived=false", "", 1007);
         assert_eq!(body.as_ref().unwrap()["data"].as_array().unwrap().len(), 0);
 
-        let (status, _) = call(c, "DELETE", &format!("/api/session/{id}"), "", "", 1008);
+        let (status, _) = call(&t.paths, c, "DELETE", &format!("/api/session/{id}"), "", "", 1008);
         assert_eq!(status, 204);
-        let (status, _) = call(c, "GET", &format!("/api/session/{id}"), "", "", 1009);
+        let (status, _) = call(&t.paths, c, "GET", &format!("/api/session/{id}"), "", "", 1009);
         assert_eq!(status, 404);
     }
 
@@ -1317,6 +1435,7 @@ mod tests {
         let c = &mut t.db.conn;
         for (title, now) in [("a", 1000_i64), ("b", 2000), ("c", 3000)] {
             let (status, _) = call(
+                &t.paths,
                 c,
                 "POST",
                 "/api/session",
@@ -1326,7 +1445,7 @@ mod tests {
             );
             assert_eq!(status, 200);
         }
-        let (_, body) = call(c, "GET", "/api/session", "limit=2", "", 4000);
+        let (_, body) = call(&t.paths, c, "GET", "/api/session", "limit=2", "", 4000);
         let body = body.unwrap();
         let data = body["data"].as_array().unwrap();
         assert_eq!(data.len(), 2);
@@ -1334,6 +1453,7 @@ mod tests {
         assert_eq!(data[1]["title"], "b");
         let next = body["cursor"]["next"].as_str().unwrap().to_owned();
         let (_, body) = call(
+            &t.paths,
             c,
             "GET",
             "/api/session",
@@ -1350,7 +1470,7 @@ mod tests {
     fn message_list_wire_and_cursor() {
         let mut t = temp_db("messages");
         let c = &mut t.db.conn;
-        let (status, body) = call(c, "POST", "/api/session", "", "{}", 1000);
+        let (status, body) = call(&t.paths, c, "POST", "/api/session", "", "{}", 1000);
         assert_eq!(status, 200);
         let id = body.unwrap()["data"]["id"].as_str().unwrap().to_owned();
         session_message::insert_message(
@@ -1384,6 +1504,7 @@ mod tests {
         .unwrap();
 
         let (status, body) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1399,6 +1520,7 @@ mod tests {
         assert_eq!(data[1]["content"][0]["text"], "hello");
 
         let (_, body) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1410,6 +1532,7 @@ mod tests {
         let first_id = body["data"][0]["id"].as_str().unwrap().to_owned();
         let next = body["cursor"]["next"].as_str().unwrap().to_owned();
         let (_, body) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1422,6 +1545,7 @@ mod tests {
         assert_ne!(data[0]["id"], first_id);
 
         let (_, body) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1432,6 +1556,7 @@ mod tests {
         assert_eq!(body.unwrap()["data"].as_array().unwrap().len(), 1);
 
         let (status, _) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1442,6 +1567,7 @@ mod tests {
         assert_eq!(status, 400);
 
         let (status, _) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1452,6 +1578,7 @@ mod tests {
         assert_eq!(status, 400);
 
         let (status, _) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1466,9 +1593,10 @@ mod tests {
     fn child_sessions_cascade_on_delete() {
         let mut t = temp_db("cascade");
         let c = &mut t.db.conn;
-        let (_, body) = call(c, "POST", "/api/session", "", r#"{"title":"parent"}"#, 1000);
+        let (_, body) = call(&t.paths, c, "POST", "/api/session", "", r#"{"title":"parent"}"#, 1000);
         let parent = body.unwrap()["data"]["id"].as_str().unwrap().to_owned();
         let (_, body) = call(
+            &t.paths,
             c,
             "POST",
             "/api/session",
@@ -1477,9 +1605,9 @@ mod tests {
             1001,
         );
         let child = body.unwrap()["data"]["id"].as_str().unwrap().to_owned();
-        let (status, _) = call(c, "DELETE", &format!("/api/session/{parent}"), "", "", 1002);
+        let (status, _) = call(&t.paths, c, "DELETE", &format!("/api/session/{parent}"), "", "", 1002);
         assert_eq!(status, 204);
-        let (status, _) = call(c, "GET", &format!("/api/session/{child}"), "", "", 1003);
+        let (status, _) = call(&t.paths, c, "GET", &format!("/api/session/{child}"), "", "", 1003);
         assert_eq!(status, 404);
     }
 
@@ -1489,11 +1617,12 @@ mod tests {
         std::env::remove_var("DEVCODE_MODEL");
         let mut t = temp_db("prompt");
         let c = &mut t.db.conn;
-        let (_, body) = call(c, "POST", "/api/session", "", r#"{"title":"p"}"#, 1000);
+        let (_, body) = call(&t.paths, c, "POST", "/api/session", "", r#"{"title":"p"}"#, 1000);
         let id = body.unwrap()["data"]["id"].as_str().unwrap().to_owned();
 
         // admit-only: no model required
         let (status, body) = call(
+            &t.paths,
             c,
             "POST",
             &format!("/api/session/{id}/prompt"),
@@ -1513,6 +1642,7 @@ mod tests {
 
         // explicit message id must be a message id
         let (status, _) = call(
+            &t.paths,
             c,
             "POST",
             &format!("/api/session/{id}/prompt"),
@@ -1524,6 +1654,7 @@ mod tests {
 
         // resume requires a model when DEVCODE_MODEL is unset
         let (status, body) = call(
+            &t.paths,
             c,
             "POST",
             &format!("/api/session/{id}/prompt"),
@@ -1536,6 +1667,7 @@ mod tests {
 
         // unparseable model
         let (status, _) = call(
+            &t.paths,
             c,
             "POST",
             &format!("/api/session/{id}/prompt"),
@@ -1554,6 +1686,7 @@ mod tests {
             r#"{"text":"hi","files":{}}"#,
         ] {
             let (status, _) = call(
+                &t.paths,
                 c,
                 "POST",
                 &format!("/api/session/{id}/prompt"),
@@ -1566,6 +1699,7 @@ mod tests {
 
         // unknown session
         let (status, _) = call(
+            &t.paths,
             c,
             "POST",
             "/api/session/ses_missing/prompt",
@@ -1577,6 +1711,7 @@ mod tests {
 
         // the admitted prompt is visible in the message list
         let (_, body) = call(
+            &t.paths,
             c,
             "GET",
             &format!("/api/session/{id}/message"),
@@ -1599,9 +1734,117 @@ mod tests {
     fn plugin_list_endpoint_responds() {
         let mut t = temp_db("plugin-list");
         let c = &mut t.db.conn;
-        let (status, body) = call(c, "GET", "/api/plugin", "", "", 1000);
+        let (status, body) = call(&t.paths, c, "GET", "/api/plugin", "", "", 1000);
         assert_eq!(status, 200);
         assert!(body.unwrap()["data"].is_array());
+    }
+
+    #[test]
+    fn mcp_list_empty_when_unconfigured() {
+        let mut t = temp_db("mcp-empty");
+        let c = &mut t.db.conn;
+        let (status, body) = call(&t.paths, c, "GET", "/api/mcp", "", "", 1000);
+        assert_eq!(status, 200);
+        assert_eq!(body.unwrap()["data"], json!([]));
+    }
+
+    #[test]
+    fn mcp_list_reports_pending_disabled_local_and_oauth_remote() {
+        let mut t = temp_db("mcp-states");
+        std::fs::write(
+            t.paths.config.join("devcode.jsonc"),
+            r#"{
+  "mcp": { "servers": {
+    "local-server": { "type": "local", "command": ["demo-mcp"] },
+    "disabled-server": { "type": "local", "command": ["demo-mcp"], "disabled": true },
+    "remote-plain": { "type": "remote", "url": "https://example.com/mcp" },
+    "remote-oauth": { "type": "remote", "url": "https://mcp.example.com/", "oauth": {} }
+  } }
+}"#,
+        )
+        .unwrap();
+        let c = &mut t.db.conn;
+        let (status, body) = call(&t.paths, c, "GET", "/api/mcp", "", "", 1000);
+        assert_eq!(status, 200);
+        let data = body.unwrap()["data"].as_array().unwrap().clone();
+        assert_eq!(
+            data.iter().map(|entry| entry["name"].as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["disabled-server", "local-server", "remote-oauth", "remote-plain"],
+            "servers must be sorted by name"
+        );
+        let entry = |name: &str| data.iter().find(|entry| entry["name"] == name).unwrap().clone();
+        assert_eq!(entry("disabled-server")["status"], json!({ "status": "disabled" }));
+        assert_eq!(entry("local-server")["status"], json!({ "status": "pending" }));
+        assert_eq!(entry("remote-plain")["status"], json!({ "status": "pending" }));
+        assert_eq!(
+            entry("remote-oauth")["status"],
+            json!({ "status": "needs_auth", "error": "MCP server \"remote-oauth\" requires OAuth authentication. Run: DEVcode mcp auth remote-oauth" })
+        );
+        let integration_id = entry("remote-oauth")["integrationID"].as_str().unwrap().to_string();
+        assert!(integration_id.starts_with("mcp_"), "integrationID shape: {integration_id}");
+        assert_eq!(integration_id, devcode_mcp::oauth::CredentialStore::integration_id("remote-oauth", "https://mcp.example.com/"));
+        assert!(entry("local-server").get("integrationID").is_none());
+    }
+
+    #[test]
+    fn mcp_list_oauth_remote_with_stored_credential_is_pending() {
+        let mut t = temp_db("mcp-credential");
+        let url = "https://mcp.example.com/";
+        std::fs::write(
+            t.paths.config.join("devcode.jsonc"),
+            r#"{ "mcp": { "servers": { "remote-oauth": { "type": "remote", "url": "https://mcp.example.com/", "oauth": {} } } } }"#,
+        )
+        .unwrap();
+        let integration_id = devcode_mcp::oauth::CredentialStore::integration_id("remote-oauth", url);
+        let store = devcode_mcp::oauth::CredentialStore::open(&t.paths.data.join("devcode.db").to_string_lossy()).unwrap();
+        store
+            .save(
+                &integration_id,
+                "default",
+                &devcode_mcp::oauth::StoredOAuth {
+                    kind: "oauth".to_string(),
+                    method_id: integration_id.clone(),
+                    refresh: "refresh-token".to_string(),
+                    access: "access-token".to_string(),
+                    expires: 0,
+                    metadata: Default::default(),
+                },
+            )
+            .unwrap();
+        drop(store);
+        let c = &mut t.db.conn;
+        let (status, body) = call(&t.paths, c, "GET", "/api/mcp", "", "", 1000);
+        assert_eq!(status, 200);
+        let data = body.unwrap()["data"].as_array().unwrap().clone();
+        let entry = data.iter().find(|entry| entry["name"] == "remote-oauth").unwrap();
+        assert_eq!(entry["status"], json!({ "status": "pending" }));
+        assert_eq!(entry["integrationID"], json!(integration_id));
+    }
+
+    #[test]
+    fn mcp_list_merges_plugin_contributions() {
+        let mut t = temp_db("mcp-plugins");
+        std::fs::write(
+            t.paths.config.join("devcode.jsonc"),
+            r#"{ "mcp": { "servers": { "figma": { "type": "remote", "url": "https://disabled.example.com/", "oauth": {}, "disabled": true } } } }"#,
+        )
+        .unwrap();
+        // A user entry with the same name (even disabled) wins over the contribution.
+        let contributed = vec![(
+            "figma".to_string(),
+            json!({ "type": "remote", "url": "https://mcp.figma.com/mcp", "oauth": {} }),
+        )];
+        let servers = mcp_list(&t.paths, &contributed);
+        let entry = servers.iter().find(|entry| entry["name"] == "figma").unwrap();
+        assert_eq!(entry["status"], json!({ "status": "disabled" }));
+        assert_eq!(entry["integrationID"], json!(devcode_mcp::oauth::CredentialStore::integration_id("figma", "https://disabled.example.com/")));
+
+        // Without the user entry, the contribution appears with needs_auth.
+        std::fs::remove_file(t.paths.config.join("devcode.jsonc")).unwrap();
+        let servers = mcp_list(&t.paths, &contributed);
+        let entry = servers.iter().find(|entry| entry["name"] == "figma").unwrap();
+        assert_eq!(entry["status"]["status"], json!("needs_auth"));
+        assert_eq!(entry["integrationID"], json!(devcode_mcp::oauth::CredentialStore::integration_id("figma", "https://mcp.figma.com/mcp")));
     }
 
     #[test]
@@ -1609,6 +1852,7 @@ mod tests {
         let mut t = temp_db("conflict");
         let c = &mut t.db.conn;
         let (status, _) = call(
+            &t.paths,
             c,
             "POST",
             "/api/session",
@@ -1618,6 +1862,7 @@ mod tests {
         );
         assert_eq!(status, 200);
         let (status, body) = call(
+            &t.paths,
             c,
             "POST",
             "/api/session",
@@ -1628,6 +1873,7 @@ mod tests {
         assert_eq!(status, 409);
         assert_eq!(body.unwrap()["_tag"], "ConflictError");
         let (status, _) = call(
+            &t.paths,
             c,
             "POST",
             "/api/session",
