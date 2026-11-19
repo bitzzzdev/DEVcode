@@ -31,13 +31,19 @@ pub fn run(args: &[String]) -> std::process::ExitCode {
         }
     };
 
-    let server: &ServerConfig = match config.servers.get(server_name) {
+    // Plugin-contributed servers are visible to auth too, so an installed plugin
+    // (e.g. devcode.figma) can be signed in without hand-writing devcode.jsonc.
+    // User config still wins on name conflict.
+    let plugins = devcode_runner::load_plugin_host(&paths);
+    let servers = devcode_runner::merge_plugin_mcp_servers(config.servers, &plugins);
+
+    let server: &ServerConfig = match servers.get(server_name) {
         Some(s) => s,
         None => {
             eprintln!("MCP server not found: {server_name}");
             eprintln!(
                 "configured servers: {}",
-                config.servers.keys().cloned().collect::<Vec<_>>().join(", ")
+                servers.keys().cloned().collect::<Vec<_>>().join(", ")
             );
             return std::process::ExitCode::from(1);
         }

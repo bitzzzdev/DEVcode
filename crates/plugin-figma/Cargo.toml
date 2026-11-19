@@ -1,0 +1,14 @@
+[package]
+name = "devcode-plugin-figma"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+devcode-plugin = { path = "../plugin" }
+devcode-skills = { path = "../skills" }
+serde_json = { version = "1", features = ["preserve_order"] }

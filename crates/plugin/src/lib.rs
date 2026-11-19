@@ -59,6 +59,17 @@ pub trait Plugin: Send + Sync {
         let _ = input;
         Err(format!("plugin reports no handler for tool {name}"))
     }
+    /// MCP servers contributed by the plugin, in the same shape as an `mcp.servers`
+    /// entry in devcode.jsonc. The host merges them into the loaded config; an entry
+    /// already present in user configuration (including `disabled: true`) wins.
+    fn mcp_servers(&self) -> Vec<(String, Value)> {
+        Vec::new()
+    }
+    /// Skills contributed by the plugin. The host preserves skills whose id is
+    /// already registered (embedded or from `<config>/skills/`).
+    fn skills(&self) -> Vec<devcode_skills::Skill> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,6 +122,22 @@ impl Host {
             }
         }
         None
+    }
+
+    /// MCP servers contributed by every loaded plugin, in load order.
+    pub fn mcp_servers(&self) -> Vec<(String, Value)> {
+        self.plugins
+            .iter()
+            .flat_map(|plugin| plugin.instance.mcp_servers())
+            .collect()
+    }
+
+    /// Skills contributed by every loaded plugin, in load order.
+    pub fn skills(&self) -> Vec<devcode_skills::Skill> {
+        self.plugins
+            .iter()
+            .flat_map(|plugin| plugin.instance.skills())
+            .collect()
     }
 
     /// Read every `*/plugin.json` under `dir`. Malformed manifests are reported and skipped.
@@ -215,17 +242,14 @@ mod tests {
     use super::*;
 
     fn fixture_library() -> PathBuf {
+        // `cargo test` builds dev-dependencies as rlibs; the cdylib artifact is only
+        // guaranteed on `cargo build`, and a pre-existing artifact can be stale (built
+        // against an older Plugin trait, whose vtable no longer matches). Always rebuild.
         let workspace_target = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
             .join("debug")
             .join("libdevcode_plugin_fixture.so");
-        if workspace_target.exists() {
-            return workspace_target;
-        }
-        // `cargo test` builds dev-dependencies as rlibs; the cdylib artifact is only
-        // guaranteed on `cargo build`. Build the fixture explicitly so this test is
-        // self-contained on clean checkouts (CI).
         let status = std::process::Command::new(env!("CARGO"))
             .args(["build", "--locked", "-p", "devcode-plugin-fixture"])
             .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))

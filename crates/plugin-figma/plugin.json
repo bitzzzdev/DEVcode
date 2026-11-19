@@ -1,0 +1,6 @@
+{
+  "id": "devcode.figma",
+  "version": "2.3.0-rust",
+  "description": "Figma remote MCP server and official Figma skills for DevCode",
+  "library": "libdevcode_plugin_figma.so"
+}

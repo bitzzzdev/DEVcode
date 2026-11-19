@@ -184,7 +184,7 @@ pub fn execute(
     )?;
 
     let plugins = load_plugin_host(paths);
-    let mut mcp = load_mcp_runtime(paths);
+    let mut mcp = load_mcp_runtime(paths, &plugins);
     let outcome = step_loop(
         conn,
         paths,
@@ -260,7 +260,7 @@ pub fn run_admitted(
         started,
     )?;
     let plugins = load_plugin_host(paths);
-    let mut mcp = load_mcp_runtime(paths);
+    let mut mcp = load_mcp_runtime(paths, &plugins);
     let outcome = step_loop(
         conn, paths, model, &directory, max_steps, on_text, on_tool, session_id, &plugins, &mut mcp,
     );
@@ -302,28 +302,52 @@ const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "glob", "grep", "
 /// complicate reload semantics on the service. Load failures print to stderr and do
 /// not abort the run.
 /// Connect to every MCP server enabled in `<config>/devcode.jsonc` (`mcp.servers`,
-/// same format the Bun build reads). Per-run connections; unreachable servers are
-/// reported on stderr and skipped.
-fn load_mcp_runtime(paths: &devcode_util::Paths) -> devcode_mcp::Runtime {
+/// same format the Bun build reads), plus servers contributed by plugins. An entry
+/// already present in user config wins, including `disabled: true`. Per-run
+/// connections; unreachable servers are reported on stderr and skipped.
+fn load_mcp_runtime(paths: &devcode_util::Paths, plugins: &devcode_plugin::Host) -> devcode_mcp::Runtime {
     let db_path = devcode_core::database_path(paths);
     let config_path = paths.config.join("devcode.jsonc");
     let config = match devcode_mcp::load_config(&config_path) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("{error}");
-            return devcode_mcp::Runtime::connect_all(
-                &Default::default(),
-                std::time::Duration::from_secs(5),
-                &db_path,
-            );
+            devcode_mcp::McpConfig::default()
         }
     };
-    devcode_mcp::Runtime::connect_all(&config.servers, std::time::Duration::from_secs(5), &db_path)
+    let servers = merge_plugin_mcp_servers(config.servers, plugins);
+    devcode_mcp::Runtime::connect_all(&servers, std::time::Duration::from_secs(5), &db_path)
 }
 
-/// Load embedded skills plus those under `<config>/skills/` for one run.
-fn load_skills(paths: &devcode_util::Paths) -> Vec<devcode_skills::Skill> {
-    devcode_skills::load(&paths.config, env!("CARGO_PKG_VERSION"))
+/// User config wins on name conflict; plugin contributions fill the gaps.
+pub fn merge_plugin_mcp_servers(
+    mut servers: std::collections::BTreeMap<String, devcode_mcp::ServerConfig>,
+    plugins: &devcode_plugin::Host,
+) -> std::collections::BTreeMap<String, devcode_mcp::ServerConfig> {
+    for (name, spec) in plugins.mcp_servers() {
+        if servers.contains_key(&name) {
+            continue;
+        }
+        match devcode_mcp::parse_server(&name, &spec) {
+            Some(server) => {
+                servers.insert(name, server);
+            }
+            None => eprintln!("plugin contributed an unusable mcp server entry: {name}"),
+        }
+    }
+    servers
+}
+
+/// Load embedded skills, those under `<config>/skills/`, and skills contributed by
+/// plugins (Bun semantics: an existing skill with the same id is preserved).
+fn load_skills(paths: &devcode_util::Paths, plugins: &devcode_plugin::Host) -> Vec<devcode_skills::Skill> {
+    let mut skills = devcode_skills::load(&paths.config, env!("CARGO_PKG_VERSION"));
+    for skill in plugins.skills() {
+        if !skills.iter().any(|existing| existing.id == skill.id) {
+            skills.push(skill);
+        }
+    }
+    skills
 }
 
 /// System prompt for this run: the static head plus the available-skills section.
@@ -334,7 +358,7 @@ fn system_prompt(skills: &[devcode_skills::Skill]) -> String {
     )
 }
 
-fn load_plugin_host(paths: &devcode_util::Paths) -> devcode_plugin::Host {
+pub fn load_plugin_host(paths: &devcode_util::Paths) -> devcode_plugin::Host {
     let dir = paths.config.join("plugins");
     let mut host = devcode_plugin::Host::empty();
     if !dir.is_dir() {
@@ -362,7 +386,7 @@ fn step_loop(
     plugins: &devcode_plugin::Host,
     mcp: &mut devcode_mcp::Runtime,
 ) -> Result<(), String> {
-    let skills = load_skills(paths);
+    let skills = load_skills(paths, plugins);
     let system = system_prompt(&skills);
     let model_json = model_json(model);
     let tools = tool_specs(plugins, mcp);
@@ -993,7 +1017,7 @@ mod tests {
             name: "fixture_echo".into(),
             arguments: r#"{"text":"hello"}"#.into(),
         };
-        let skills = load_skills(&paths);
+        let skills = load_skills(&paths, &host);
         let part = execute_tool(
             &paths,
             &call,
@@ -1016,7 +1040,7 @@ mod tests {
             name: "shell".into(),
             arguments: r#"{"command":"printf builtin-wins"}"#.into(),
         };
-        let skills = load_skills(&paths);
+        let skills = load_skills(&paths, &host);
         let part = execute_tool(
             &paths,
             &call,

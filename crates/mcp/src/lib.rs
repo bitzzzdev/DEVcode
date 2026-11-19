@@ -122,75 +122,75 @@ pub fn load_config(path: &Path) -> Result<McpConfig, String> {
         return Ok(config);
     };
     for (name, entry) in servers {
-        let disabled = entry
-            .get("disabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        match entry.get("type").and_then(Value::as_str).unwrap_or("") {
-            "local" => {
-                let command: Vec<String> = entry
-                    .get("command")
-                    .and_then(Value::as_array)
-                    .map(|rows| {
-                        rows.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if command.is_empty() {
-                    continue;
-                }
-                let environment = entry
-                    .get("environment")
-                    .and_then(Value::as_object)
-                    .map(|obj| {
-                        obj.iter()
-                            .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                config.servers.insert(
-                    name.clone(),
-                    ServerConfig::Local(LocalConfig {
-                        command,
-                        cwd: entry.get("cwd").and_then(Value::as_str).map(str::to_owned),
-                        environment,
-                        disabled,
-                    }),
-                );
-            }
-            "remote" => {
-                let Some(url) = entry.get("url").and_then(Value::as_str) else {
-                    continue;
-                };
-                let headers = entry
-                    .get("headers")
-                    .and_then(Value::as_object)
-                    .map(|obj| {
-                        obj.iter()
-                            .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let oauth = entry.get("oauth");
-                let needs_oauth = oauth
-                    .map(|value| value != &Value::Bool(false))
-                    .unwrap_or(false);
-                config.servers.insert(
-                    name.clone(),
-                    ServerConfig::Remote(RemoteConfig {
-                        url: url.to_owned(),
-                        headers,
-                        needs_oauth,
-                        disabled,
-                    }),
-                );
-            }
-            _ => {}
+        if let Some(server) = parse_server(name, entry) {
+            config.servers.insert(name.clone(), server);
         }
     }
     Ok(config)
+}
+
+/// Parse one `mcp.servers` entry into a [`ServerConfig`]. Entries with an unknown
+/// type or missing required fields yield `None`.
+pub fn parse_server(_name: &str, entry: &Value) -> Option<ServerConfig> {
+    let disabled = entry
+        .get("disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match entry.get("type").and_then(Value::as_str).unwrap_or("") {
+        "local" => {
+            let command: Vec<String> = entry
+                .get("command")
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if command.is_empty() {
+                return None;
+            }
+            let environment = entry
+                .get("environment")
+                .and_then(Value::as_object)
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(ServerConfig::Local(LocalConfig {
+                command,
+                cwd: entry.get("cwd").and_then(Value::as_str).map(str::to_owned),
+                environment,
+                disabled,
+            }))
+        }
+        "remote" => {
+            let url = entry.get("url").and_then(Value::as_str)?;
+            let headers = entry
+                .get("headers")
+                .and_then(Value::as_object)
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let oauth = entry.get("oauth");
+            let needs_oauth = oauth
+                .map(|value| value != &Value::Bool(false))
+                .unwrap_or(false);
+            Some(ServerConfig::Remote(RemoteConfig {
+                url: url.to_owned(),
+                headers,
+                needs_oauth,
+                disabled,
+            }))
+        }
+        _ => None,
+    }
 }
 
 pub fn normalize_name(name: &str) -> String {

@@ -309,8 +309,18 @@ name = "devcode-plugin"
 version = "0.1.0-rust"
 dependencies = [
  "devcode-plugin-fixture",
+ "devcode-skills",
  "libloading",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "devcode-plugin-figma"
+version = "0.1.0-rust"
+dependencies = [
+ "devcode-plugin",
+ "devcode-skills",
  "serde_json",
 ]
 
