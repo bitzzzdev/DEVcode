@@ -24,6 +24,14 @@ pub struct SessionRow {
     pub title: String,
 }
 
+/// Messages from the background SSE worker (`GET /api/session/{id}/events`).
+/// `Delta` carries one streamed text chunk of the in-flight run; `Ended`
+/// marks the terminal `session.execution.*` frame (or a dropped stream).
+enum SseMsg {
+    Delta(String),
+    Ended,
+}
+
 pub struct McpRow {
     pub name: String,
     pub status: String,
@@ -70,6 +78,10 @@ pub struct App {
     seen_len: usize,
     last_sessions_refresh: Instant,
     last_messages_refresh: Instant,
+    // provisional assistant text of the in-flight run (from the SSE delta
+    // stream); reconciled by the message poll, cleared on rebuild
+    stream_buffer: String,
+    sse_rx: Option<std::sync::mpsc::Receiver<SseMsg>>,
 }
 
 pub fn run() -> ExitCode {
@@ -105,6 +117,8 @@ pub fn run() -> ExitCode {
         seen_len: usize::MAX,
         last_sessions_refresh: Instant::now() - Duration::from_secs(60),
         last_messages_refresh: Instant::now() - Duration::from_secs(60),
+        stream_buffer: String::new(),
+        sse_rx: None,
     };
     app.refresh_sessions();
     app.refresh_messages(true);
@@ -540,11 +554,110 @@ impl App {
                     self.transcript = transcript_lines(&rows);
                     self.seen_len = rows.len();
                     self.scroll = self.max_scroll();
+                    self.stream_buffer.clear();
                 }
                 self.last_messages_refresh = Instant::now();
             }
             Err(error) => self.set_status(error, true),
         }
+    }
+
+    /// Drain every pending SSE message for the selected run.
+    fn drain_sse(&mut self) {
+        let mut ended = false;
+        if let Some(rx) = &self.sse_rx {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    SseMsg::Delta(text) => {
+                        self.stream_buffer.push_str(&text);
+                        // Defensive cap: a runaway stream must not grow the
+                        // transcript without bound between polls.
+                        if self.stream_buffer.len() > 256 * 1024 {
+                            self.stream_buffer.clear();
+                        }
+                    }
+                    SseMsg::Ended => ended = true,
+                }
+            }
+        }
+        if ended {
+            self.sse_rx = None;
+            // Force a full rebuild on the next poll; the buffer is cleared there.
+            self.seen_len = usize::MAX;
+        }
+    }
+
+    /// Open the SSE stream for a freshly admitted run; deltas accumulate in
+    /// `stream_buffer` and render as a provisional assistant block. The
+    /// stream closes itself at the run's terminal event; the 750 ms message
+    /// poll remains the reconciliation path.
+    fn start_sse(&mut self, session_id: String) {
+        self.stream_buffer.clear();
+        let (tx, rx) = std::sync::mpsc::channel::<SseMsg>();
+        self.sse_rx = Some(rx);
+        let base = self.base.clone();
+        let auth = self.auth.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead as _;
+            let url = format!("{base}/api/session/{session_id}/events");
+            let result = ureq::get(&url)
+                .set("authorization", &auth)
+                .set("accept", "text/event-stream")
+                .call();
+            let Ok(response) = result else {
+                let _ = tx.send(SseMsg::Ended);
+                return;
+            };
+            let mut reader = std::io::BufReader::new(response.into_reader());
+            let mut event = String::new();
+            let mut data = String::new();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim_end();
+                        if trimmed.is_empty() {
+                            if !event.is_empty() {
+                                if event == "delta" {
+                                    if let Some(text) = serde_json::from_str::<Value>(&data)
+                                        .ok()
+                                        .and_then(|value| {
+                                            value.get("text").and_then(Value::as_str).map(str::to_owned)
+                                        })
+                                    {
+                                        if tx.send(SseMsg::Delta(text)).is_err() {
+                                            return;
+                                        }
+                                    }
+                                } else if event.starts_with("session.execution.") {
+                                    if tx.send(SseMsg::Ended).is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                            event.clear();
+                            data.clear();
+                            continue;
+                        }
+                        if let Some(value) = trimmed.strip_prefix("event:") {
+                            event = value.trim().to_owned();
+                            continue;
+                        }
+                        if let Some(value) = trimmed.strip_prefix("data:") {
+                            if !data.is_empty() {
+                                data.push('\n');
+                            }
+                            data.push_str(value.trim());
+                        }
+                        // comment (keepalive) and other lines are ignored
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(SseMsg::Ended);
+        });
     }
 
     fn max_scroll(&self) -> u16 {
@@ -730,6 +843,7 @@ impl App {
             Ok(_) => {
                 self.set_status("sent".to_owned(), false);
                 self.last_messages_refresh = Instant::now() - Duration::from_secs(60);
+                self.start_sse(id);
             }
             Err(error) => self.set_status(error, true),
         }
@@ -790,7 +904,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
     // transcript
     app.viewport_h = right[0].height.saturating_sub(2).max(1);
-    let lines: Vec<Line> = app
+    let mut lines: Vec<Line> = app
         .transcript
         .iter()
         .map(|line| {
@@ -806,7 +920,22 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Line::from(Span::styled(line.clone(), style))
         })
         .collect();
-    let max_scroll = app.max_scroll();
+    if !app.stream_buffer.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "assistant › (streaming)",
+            Style::default().fg(Color::White),
+        )));
+        for text in app.stream_buffer.lines() {
+            lines.push(Line::from(Span::styled(text.to_owned(), Style::default().fg(Color::Gray))));
+        }
+        lines.push(Line::from(Span::styled("▌", Style::default().fg(Color::Yellow))));
+    }
+    let max_scroll = (lines.len().saturating_sub(app.viewport_h as usize)) as u16;
+    if !app.stream_buffer.is_empty() {
+        // follow the tail while streaming
+        app.scroll = max_scroll;
+    }
     if app.scroll > max_scroll {
         app.scroll = max_scroll;
     }
@@ -1178,6 +1307,7 @@ fn event_loop(app: &mut App, stdout: &mut Stdout) -> Result<(), Box<dyn std::err
             }
         }
 
+        app.drain_sse();
         if app.last_messages_refresh.elapsed() >= Duration::from_millis(750) {
             app.refresh_messages(false);
         }
@@ -1240,6 +1370,8 @@ mod tests {
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            sse_rx: None,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -1253,6 +1385,83 @@ mod tests {
         assert!(text.contains("you › hi"), "transcript line missing");
         assert!(text.contains("openai/x"), "model in status bar missing");
         assert!(text.contains("abc"), "input text missing");
+    }
+
+    #[test]
+    fn streaming_block_renders_provisional_assistant_text() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            sessions: vec![SessionRow {
+                id: "ses_1".to_owned(),
+                title: "demo".to_owned(),
+            }],
+            selected: 0,
+            transcript: vec!["you › hi".to_owned()],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: Some("openai/x".to_owned()),
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: None,
+            mcp_prompt_cache: None,
+            seen_len: 1,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+            stream_buffer: "partial output\nsecond line".to_owned(),
+            sse_rx: None,
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("(streaming)"), "streaming header missing: {text}");
+        assert!(text.contains("partial output"), "streamed text missing: {text}");
+        assert!(text.contains("second line"), "streamed text missing: {text}");
+        assert!(text.contains("▌"), "cursor glyph missing: {text}");
+    }
+
+    #[test]
+    fn drain_sse_accumulates_and_forces_rebuild_on_end() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            sessions: Vec::new(),
+            selected: 0,
+            transcript: Vec::new(),
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: None,
+            mcp_prompt_cache: None,
+            seen_len: 3,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            sse_rx: Some(rx),
+        };
+        tx.send(SseMsg::Delta("hel".to_owned())).unwrap();
+        tx.send(SseMsg::Delta("lo".to_owned())).unwrap();
+        app.drain_sse();
+        assert_eq!(app.stream_buffer, "hello");
+        assert_eq!(app.seen_len, 3, "buffer alone must not force an early rebuild");
+        tx.send(SseMsg::Ended).unwrap();
+        app.drain_sse();
+        assert!(app.sse_rx.is_none(), "ended stream must be dropped");
+        assert_eq!(app.seen_len, usize::MAX, "end must force the next poll to rebuild");
     }
 
     #[test]
@@ -1351,6 +1560,8 @@ mod tests {
             seen_len: 0,
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            sse_rx: None,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -1427,6 +1638,8 @@ mod tests {
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            sse_rx: None,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();

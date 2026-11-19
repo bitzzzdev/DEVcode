@@ -234,6 +234,15 @@ fn running_remove(session_id: &str) {
     set.remove(session_id);
 }
 
+/// Whether the agent loop for `session_id` is running in this process.
+fn session_run_active(session_id: &str) -> bool {
+    RUNNING
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .map(|set| set.contains(session_id))
+        .unwrap_or(false)
+}
+
 pub fn run(args: &[String]) -> ExitCode {
     let service_mode = args.iter().any(|arg| arg == "--service");
     let paths = devcode_util::paths("devcode");
@@ -368,6 +377,65 @@ fn handle(
         Some((path, query)) => (path.to_string(), query.to_string()),
         None => (url.clone(), String::new()),
     };
+    if method == "GET" {
+        if let Some(session_id) = session_events_id(&path) {
+            // SSE stream: served on a dedicated thread; the main loop keeps
+            // answering polls and prompts. The stream ends after
+            // session.execution.succeeded/failed (or disconnect).
+            match devcode_core::session_api::get_info(conn, &session_id) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    let body = json!({
+                        "_tag": "SessionNotFoundError",
+                        "sessionID": session_id,
+                        "message": format!("Session not found: {session_id}"),
+                    });
+                    respond(request, 404, body);
+                    return;
+                }
+                Err(error) => {
+                    let body = json!({"_tag": "UnknownError", "message": format!("Failed to read session: {error}")});
+                    respond(request, 500, body);
+                    return;
+                }
+            }
+            if !session_run_active(&session_id) {
+                // No run in flight: hand back a self-contained terminal
+                // frame so the client reconciles immediately instead of
+                // parking in read_line forever.
+                let payload = format!(
+                    "event: session.execution.idle\ndata: {{\"sessionID\":\"{session_id}\"}}\n\n"
+                );
+                let response = Response::from_string(payload)
+                    .with_status_code(StatusCode(200))
+                    .with_header(
+                        Header::from_bytes(&b"content-type"[..], &b"text/event-stream"[..]).unwrap(),
+                    )
+                    .with_header(
+                        Header::from_bytes(&b"cache-control"[..], &b"no-cache"[..]).unwrap(),
+                    );
+                let _ = request.respond(response);
+                return;
+            }
+            let rx = devcode_runner::subscribe();
+            let reader = SseReader::new(rx, session_id, std::time::Duration::from_secs(15));
+            let response = Response::new(
+                StatusCode(200),
+                vec![
+                    Header::from_bytes(&b"content-type"[..], &b"text/event-stream"[..]).unwrap(),
+                    Header::from_bytes(&b"cache-control"[..], &b"no-cache"[..]).unwrap(),
+                ],
+                reader,
+                None,
+                None,
+            );
+            std::thread::spawn(move || {
+                let _ = request.respond(response);
+            });
+            return;
+        }
+    }
+    // NOTE: `path`/`query` were already computed above for the SSE intercept.
     use std::io::Read as _;
     let mut body = Vec::new();
     let reader = request.as_reader();
@@ -1277,6 +1345,110 @@ fn route(
     }
 }
 
+/// Match `GET /api/session/{id}/events`; returns the session id when it is one.
+fn session_events_id(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/api/session/")?;
+    let id = rest.strip_suffix("/events")?;
+    if id.is_empty() || !id.starts_with("ses") {
+        return None;
+    }
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return None;
+    }
+    Some(id.to_owned())
+}
+
+/// Server-Sent Events stream of run events for one session. New surface:
+/// the Bun build has no events HTTP endpoint (the Bun TUI talks to its own
+/// in-process bus); the Rust TUI needs it because it only knows HTTP. The
+/// stream is best-effort — lost frames are reconciled by the client's
+/// message poll — and it ends after the run's terminal event.
+struct SseReader {
+    rx: std::sync::mpsc::Receiver<devcode_runner::StreamEvent>,
+    session_id: String,
+    buf: std::collections::VecDeque<u8>,
+    done: bool,
+    keepalive: std::time::Duration,
+}
+
+impl SseReader {
+    fn new(
+        rx: std::sync::mpsc::Receiver<devcode_runner::StreamEvent>,
+        session_id: String,
+        keepalive: std::time::Duration,
+    ) -> Self {
+        Self {
+            rx,
+            session_id,
+            buf: std::collections::VecDeque::new(),
+            done: false,
+            keepalive,
+        }
+    }
+
+    fn frame(&mut self, event: &str, data: &serde_json::Value) {
+        self.push_bytes(format!("event: {event}\ndata: {data}\n\n").as_bytes());
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) {
+        self.buf.extend(bytes.iter().copied());
+    }
+}
+
+impl std::io::Read for SseReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if !self.buf.is_empty() {
+                let n = self.buf.len().min(out.len());
+                for slot in &mut out[..n] {
+                    if let Some(byte) = self.buf.pop_front() {
+                        *slot = byte;
+                    }
+                }
+                return Ok(n);
+            }
+            if self.done {
+                return Ok(0);
+            }
+            match self.rx.recv_timeout(self.keepalive) {
+                Ok(event) => match event {
+                    devcode_runner::StreamEvent::Delta { session_id, text }
+                        if session_id == self.session_id =>
+                    {
+                        self.frame(
+                            "delta",
+                            &json!({ "sessionID": session_id, "text": text }),
+                        );
+                    }
+                    devcode_runner::StreamEvent::Emitted {
+                        session_id,
+                        event,
+                        data,
+                    } if session_id == self.session_id => {
+                        self.frame(&event, &data);
+                        if matches!(
+                            event.as_str(),
+                            "session.execution.succeeded" | "session.execution.failed"
+                        ) {
+                            self.done = true;
+                        }
+                    }
+                    _ => {}
+                },
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.push_bytes(b": keepalive\n\n");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.done = true;
+                }
+            }
+        }
+    }
+}
+
 fn respond(request: Request, status: u16, body: serde_json::Value) {
     let payload = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
     let response = Response::from_string(payload)
@@ -1317,7 +1489,7 @@ fn openapi() -> serde_json::Value {
         "info": {
             "title": "devcode HttpApi",
             "version": devcode_util::VERSION,
-            "description": "Rust port of the DEVcode HttpApi surface. Served so far: /api/info, /api/session, /api/session/{sessionID}, /api/session/{sessionID}/message, /api/plugin, /api/mcp, /api/mcp/prompts.",
+            "description": "Rust port of the DEVcode HttpApi surface. Served so far: /api/info, /api/session, /api/session/{sessionID}, /api/session/{sessionID}/message, /api/session/{sessionID}/events (SSE), /api/plugin, /api/mcp, /api/mcp/prompts.",
         },
         "paths": {
             "/api/info": {
@@ -1394,6 +1566,14 @@ fn openapi() -> serde_json::Value {
                     "summary": "Send message",
                     "description": "Durably admit one session input; with resume (default) the agent loop runs in the background. 409 when the session already has a run in progress.",
                     "responses": { "200": { "description": "Admitted inbox item" } },
+                },
+            },
+            "/api/session/{sessionID}/events": {
+                "get": {
+                    "tags": ["session"],
+                    "summary": "Run events (Server-Sent Events)",
+                    "description": "Experimental: may change without compatibility guarantees. Best-effort stream of run events for one session: `delta` text frames plus the durable events (`session.step.*`, `session.execution.*`). Ends after the terminal `session.execution.succeeded|failed` event. Lost frames must be reconciled by the client (poll GET /api/session/{sessionID}/message).",
+                    "responses": { "200": { "description": "text/event-stream" } },
                 },
             },
             "/api/session/{sessionID}/message": {
@@ -1701,6 +1881,64 @@ mod tests {
         assert_eq!(status, 204);
         let (status, _) = call(&t.paths, c, "GET", &format!("/api/session/{child}"), "", "", 1003);
         assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn session_events_id_matches_events_path() {
+        assert_eq!(
+            session_events_id("/api/session/ses_abc123/events").as_deref(),
+            Some("ses_abc123")
+        );
+        assert!(session_events_id("/api/session/ses_abc123").is_none());
+        assert!(session_events_id("/api/session/ses_abc123/events/").is_none());
+        assert!(session_events_id("/api/session//events").is_none());
+        assert!(session_events_id("/api/session/nope/events").is_none());
+        assert!(session_events_id("/api/session/ses_a/prompt").is_none());
+    }
+
+    #[test]
+    fn sse_reader_frames_session_events_and_stops_on_terminal_event() {
+        use std::io::Read as _;
+        let (sender, rx) = std::sync::mpsc::sync_channel(
+            16,
+        );
+        let mut reader = SseReader::new(rx, "ses_one".to_owned(), std::time::Duration::from_secs(60));
+        sender
+            .send(devcode_runner::StreamEvent::Delta {
+                session_id: "ses_other".to_owned(),
+                text: "skip-me".to_owned(),
+            })
+            .unwrap();
+        sender
+            .send(devcode_runner::StreamEvent::Delta {
+                session_id: "ses_one".to_owned(),
+                text: "he".to_owned(),
+            })
+            .unwrap();
+        sender
+            .send(devcode_runner::StreamEvent::Emitted {
+                session_id: "ses_one".to_owned(),
+                event: "session.step.ended".to_owned(),
+                data: json!({"sessionID": "ses_one", "finish": "stop"}),
+            })
+            .unwrap();
+        sender
+            .send(devcode_runner::StreamEvent::Emitted {
+                session_id: "ses_one".to_owned(),
+                event: "session.execution.succeeded".to_owned(),
+                data: json!({"sessionID": "ses_one"}),
+            })
+            .unwrap();
+        // Terminal event already queued; after it the reader reaches EOF.
+        let mut out = String::new();
+        reader.read_to_string(&mut out).unwrap();
+        assert!(
+            out.contains("event: delta\ndata: {\"sessionID\":\"ses_one\",\"text\":\"he\"}\n\n"),
+            "missing delta frame: {out}"
+        );
+        assert!(out.contains("event: session.step.ended\n"));
+        assert!(out.contains("event: session.execution.succeeded\n"));
+        assert!(!out.contains("skip-me"));
     }
 
     #[test]

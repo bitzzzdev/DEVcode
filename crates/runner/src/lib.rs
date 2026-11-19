@@ -16,6 +16,44 @@ pub const SYSTEM_PROMPT: &str =
      Work autonomously: make the change rather than describing it. Keep responses concise. \
      When you are done, stop calling tools. Always use absolute paths or paths relative to the working directory.";
 
+/// Live run events for subscribers (the HTTP `GET /api/session/{id}/events`
+/// SSE endpoint). Published from inside `emit` and from the text-delta sink;
+/// the 750ms message poll in the TUI stays the reconciliation path.
+#[derive(Clone, Debug)]
+pub enum StreamEvent {
+    /// One streamed text chunk of the in-flight step.
+    Delta { session_id: String, text: String },
+    /// A durable event as written to the event log.
+    Emitted {
+        session_id: String,
+        event: String,
+        data: Value,
+    },
+}
+
+static SUBSCRIBERS: std::sync::Mutex<Option<Vec<std::sync::mpsc::SyncSender<StreamEvent>>>> =
+    std::sync::Mutex::new(None);
+
+/// Subscribe to every run event process-wide; the caller filters by session.
+/// Buffered channels (256 slots); a full subscriber loses deltas (they are a
+/// liveness signal, not a correctness boundary) but the durable events it
+/// does receive still reconcile the transcript.
+pub fn subscribe() -> std::sync::mpsc::Receiver<StreamEvent> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(256);
+    if let Ok(mut guard) = SUBSCRIBERS.lock() {
+        guard.get_or_insert_with(Vec::new).push(sender);
+    }
+    receiver
+}
+
+fn publish(event: StreamEvent) {
+    if let Ok(mut guard) = SUBSCRIBERS.lock() {
+        if let Some(list) = guard.as_mut() {
+            list.retain(|sender| sender.try_send(event.clone()).is_ok());
+        }
+    }
+}
+
 pub struct Execution {
     pub prompt: String,
     pub model: ModelRef,
@@ -695,6 +733,10 @@ fn step_loop(
                     );
                 }
                 text.push_str(delta);
+                publish(StreamEvent::Delta {
+                    session_id: session_id.to_owned(),
+                    text: delta.to_owned(),
+                });
                 on_text(delta);
             };
             devcode_ai::stream_chat(
@@ -1240,8 +1282,14 @@ fn emit(
     data: Value,
     created: i64,
 ) -> Result<devcode_core::SerializedEvent, String> {
-    devcode_core::append_durable(conn, session_id, event_type, &data, created, None)
-        .map_err(|error| format!("failed to append {event_type}: {error}"))
+    let event = devcode_core::append_durable(conn, session_id, event_type, &data, created, None)
+        .map_err(|error| format!("failed to append {event_type}: {error}"))?;
+    publish(StreamEvent::Emitted {
+        session_id: session_id.to_owned(),
+        event: event_type.to_owned(),
+        data,
+    });
+    Ok(event)
 }
 fn tokens_value(usage: &devcode_ai::Usage) -> Value {
     json!({
@@ -1644,6 +1692,43 @@ mod instruction_tests {
         assert_eq!(bytes[3], b' ');
         assert_eq!(bytes[7], b' ');
         assert_eq!(bytes[10], b' ');
+    }
+
+    #[test]
+    fn emit_publishes_events_to_stream_subscribers() {
+        let root = scratch("subscribe");
+        let db = devcode_core::Database::open(&root.join("devcode.db")).unwrap();
+        let mut conn = db.conn;
+        let rx = subscribe();
+        let now = 1_700_000_000_000i64;
+        emit(
+            &mut conn,
+            "ses_subscribe_marker",
+            "session.step.ended",
+            json!({"sessionID": "ses_subscribe_marker", "n": 1}),
+            now,
+        )
+        .unwrap();
+        // Other tests in the process may publish concurrently; skip those.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(StreamEvent::Emitted {
+                    session_id,
+                    event,
+                    data,
+                }) if session_id == "ses_subscribe_marker" => {
+                    assert_eq!(event, "session.step.ended");
+                    assert_eq!(data["n"], 1);
+                    break;
+                }
+                Ok(_) => {
+                    assert!(std::time::Instant::now() < deadline, "timed out waiting for our event");
+                }
+                Err(error) => panic!("subscriber channel failed: {error}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
