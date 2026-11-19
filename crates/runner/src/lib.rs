@@ -305,6 +305,7 @@ const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "glob", "grep", "
 /// same format the Bun build reads). Per-run connections; unreachable servers are
 /// reported on stderr and skipped.
 fn load_mcp_runtime(paths: &devcode_util::Paths) -> devcode_mcp::Runtime {
+    let db_path = devcode_core::database_path(paths);
     let config_path = paths.config.join("devcode.jsonc");
     let config = match devcode_mcp::load_config(&config_path) {
         Ok(config) => config,
@@ -313,10 +314,11 @@ fn load_mcp_runtime(paths: &devcode_util::Paths) -> devcode_mcp::Runtime {
             return devcode_mcp::Runtime::connect_all(
                 &Default::default(),
                 std::time::Duration::from_secs(5),
+                &db_path,
             );
         }
     };
-    devcode_mcp::Runtime::connect_all(&config.servers, std::time::Duration::from_secs(5))
+    devcode_mcp::Runtime::connect_all(&config.servers, std::time::Duration::from_secs(5), &db_path)
 }
 
 /// Load embedded skills plus those under `<config>/skills/` for one run.
@@ -965,6 +967,7 @@ mod tests {
         let mut empty_mcp = devcode_mcp::Runtime::connect_all(
             &std::collections::BTreeMap::new(),
             std::time::Duration::from_millis(10),
+            std::path::Path::new(":memory:"),
         );
         let specs = tool_specs(&host, &empty_mcp);
         let echo = specs

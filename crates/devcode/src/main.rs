@@ -2,6 +2,7 @@
 //! background service, the discovery contract, and /api/info. Everything else is
 //! intentionally not here yet; see .progress.md for the port ledger.
 
+mod mcp_cmd;
 mod run;
 mod serve;
 mod service_cmd;
@@ -23,9 +24,10 @@ fn main() -> ExitCode {
         Some("run") => run::run(&args[1..]),
         Some("tui") => devcode_tui::run(),
         Some("service") => service_cmd::run(&args[1..]),
+        Some("mcp") => mcp_cmd::run(&args[1..]),
         Some(other) => {
             eprintln!("unknown command: {other}");
-            eprintln!("the rust build currently supports: serve, service, run, tui, --version");
+            eprintln!("the rust build currently supports: serve, service, run, tui, mcp, --version");
             eprintln!(
                 "use the bun build (DEVcode 0.0.1, all commands/features) until the port lands"
             );
@@ -46,5 +48,6 @@ fn print_help() {
     println!("  DEVcode service <status|start|stop|restart|get|set|unset> ...");
     println!("  DEVcode run [--model provider/model[#variant]] [--session ID] [--workdir PATH] [--max-steps N] <prompt>");
     println!("  DEVcode tui");
+    println!("  DEVcode mcp auth <server-name>");
     println!("  DEVcode --version");
 }

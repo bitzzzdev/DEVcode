@@ -257,6 +257,7 @@ dependencies = [
  "ctrlc",
  "devcode-ai",
  "devcode-core",
+ "devcode-mcp",
  "devcode-plugin",
  "devcode-runner",
  "devcode-service",
@@ -267,6 +268,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tiny_http",
+ "ureq",
 ]
 
 [[package]]
@@ -292,8 +294,12 @@ dependencies = [
 name = "devcode-mcp"
 version = "0.1.0-rust"
 dependencies = [
+ "base64",
+ "ring",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha1",
  "tiny_http",
  "ureq",
 ]

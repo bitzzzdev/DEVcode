@@ -1,16 +1,19 @@
 //! MCP (Model Context Protocol) client for the Rust build.
 //!
 //! Supports local (stdio, newline-delimited JSON-RPC) and remote (Streamable HTTP)
-//! servers, the initialize handshake, tools/list and tools/call. OAuth is not ported
-//! yet (Phase 10b); remote servers requiring OAuth get a clear error. Config comes from
-//! `mcp.servers` in devcode.jsonc, same shape as the Bun build.
+//! servers, the initialize handshake, tools/list and tools/call. Remote servers may
+//! authenticate with OAuth 2.0 (RFC 9728 discovery, PKCE, DCR, loopback callback)
+//! via the `oauth` module; tokens are persisted in the shared `credential` table.
+//! Config comes from `mcp.servers` in devcode.jsonc, same shape as the Bun build.
 //!
 //! Tool names are exposed namespaced as `<server>_<tool>` (server name normalized the
 //! same way the Bun build normalizes: `[^a-zA-Z0-9_-] -> _`, then dots to underscores).
 
+pub mod oauth;
+
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
@@ -224,6 +227,7 @@ impl Connection {
         name: &str,
         config: &ServerConfig,
         connect_timeout: Duration,
+        db_path: &Path,
     ) -> Result<Connection, String> {
         match config {
             ServerConfig::Local(local) => {
@@ -231,9 +235,8 @@ impl Connection {
             }
             ServerConfig::Remote(remote) => {
                 if remote.needs_oauth {
-                    return Err(format!(
-                        "MCP server \"{name}\" requires OAuth, which the Rust build does not support yet (pending Phase 10b). Set \"oauth\": false in devcode.jsonc to connect without auth, or use headers."
-                    ));
+                    // OAuth is supported now; the connection will load the stored token or fail
+                    // with a clear "run DEVcode mcp auth <name>" error when none is available.
                 }
                 let mut connection = HttpConnection {
                     name: name.to_owned(),
@@ -242,6 +245,8 @@ impl Connection {
                     session_id: None,
                     next_id: 1,
                     timeout: connect_timeout,
+                    needs_oauth: remote.needs_oauth,
+                    db_path: db_path.to_path_buf(),
                 };
                 connection.handshake(connect_timeout)?;
                 Ok(Connection::Http(connection))
@@ -473,6 +478,8 @@ pub struct HttpConnection {
     next_id: u64,
     #[allow(dead_code)]
     timeout: Duration,
+    needs_oauth: bool,
+    db_path: PathBuf,
 }
 
 impl HttpConnection {
@@ -494,7 +501,56 @@ impl HttpConnection {
         Ok(())
     }
 
+    fn load_oauth_token(&mut self) -> Result<(), String> {
+        if !self.needs_oauth || self.headers.contains_key("authorization") {
+            return Ok(());
+        }
+        let integration_id = oauth::CredentialStore::integration_id(&self.name, &self.url);
+        let store = oauth::CredentialStore::open(&self.db_path.to_string_lossy()).map_err(|error| format!("open credential store: {error}"))?;
+        match store.get(&integration_id) {
+            Ok(Some(stored)) if stored.kind == "oauth" => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                if stored.expires == 0 || stored.expires > now {
+                    self.headers.insert("authorization".into(), format!("Bearer {}", stored.access));
+                    return Ok(());
+                }
+                drop(store);
+                self.refresh_oauth_token()
+            }
+            _ => Err(format!(
+                "MCP server \"{}\" requires OAuth authentication. Run: DEVcode mcp auth {}",
+                self.name, self.name
+            )),
+        }
+    }
+
+    /// Force a token refresh and replace the cached Authorization header.
+    fn refresh_oauth_token(&mut self) -> Result<(), String> {
+        let integration_id = oauth::CredentialStore::integration_id(&self.name, &self.url);
+        let store = oauth::CredentialStore::open(&self.db_path.to_string_lossy())
+            .map_err(|error| format!("open credential store: {error}"))?;
+        let stored = store
+            .get(&integration_id)
+            .map_err(|error| format!("credential store: {error}"))?
+            .ok_or_else(|| format!("no stored credentials for MCP server \"{}\". Run: DEVcode mcp auth {}", self.name, self.name))?;
+        let agent = ureq::AgentBuilder::new().build();
+        let refreshed = oauth::refresh(&agent, &self.name, &self.url, &stored)
+            .map_err(|error| format!("token refresh failed: {error}. Run: DEVcode mcp auth {}", self.name))?;
+        store
+            .save(&integration_id, "default", &refreshed)
+            .map_err(|error| format!("save refreshed token: {error}"))?;
+        self.headers.insert("authorization".into(), format!("Bearer {}", refreshed.access));
+        Ok(())
+    }
+
     fn post(&mut self, body: Value, timeout: Duration) -> Result<ureq::Response, String> {
+        // Load (or refresh) the token before capturing headers into the request.
+        if self.needs_oauth {
+            self.load_oauth_token()?;
+        }
         let mut request = ureq::post(&self.url)
             .set("content-type", "application/json")
             .set("accept", "application/json, text/event-stream")
@@ -521,7 +577,19 @@ impl HttpConnection {
         let id = self.next_id;
         self.next_id += 1;
         let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        let response = self.post(body, timeout)?;
+
+        let mut response = self.post(body.clone(), timeout);
+        // A stored token may have been revoked server-side. Refresh once and retry on HTTP 401.
+        if self.needs_oauth {
+            if let Err(ref message) = response {
+                if message.contains("HTTP 401") {
+                    self.headers.remove("authorization");
+                    self.refresh_oauth_token()?;
+                    response = self.post(body, timeout);
+                }
+            }
+        }
+        let response = response?;
         // session id handed out on initialize
         if let Some(session_id) = response.header("mcp-session-id").map(str::to_owned) {
             self.session_id = Some(session_id);
@@ -591,7 +659,7 @@ pub struct Runtime {
 impl Runtime {
     /// Connect to every enabled server and discover tools. Servers that fail to
     /// connect are reported on stderr and skipped (the run continues without them).
-    pub fn connect_all(servers: &BTreeMap<String, ServerConfig>, timeout: Duration) -> Runtime {
+    pub fn connect_all(servers: &BTreeMap<String, ServerConfig>, timeout: Duration, db_path: &Path) -> Runtime {
         let mut runtime = Runtime {
             tools: Vec::new(),
             connections: Vec::new(),
@@ -602,7 +670,7 @@ impl Runtime {
             {
                 continue;
             }
-            match Connection::connect(name, config, timeout) {
+            match Connection::connect(name, config, timeout, db_path) {
                 Ok(mut connection) => match connection.list_tools(timeout) {
                     Ok(tools) => {
                         for tool in tools {

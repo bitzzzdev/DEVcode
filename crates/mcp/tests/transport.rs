@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::time::Duration;
 
 use devcode_mcp::{
@@ -19,7 +18,8 @@ fn stdio_handshake_tools_list_and_call() {
         disabled: false,
     });
     let timeout = Duration::from_secs(5);
-    let mut connection = Connection::connect("fixture", &config, timeout).expect("connect");
+    let db = std::path::Path::new(":memory:");
+    let mut connection = Connection::connect("fixture", &config, timeout, db).expect("connect");
     let tools = connection.list_tools(timeout).expect("list tools");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "echo");
@@ -144,7 +144,8 @@ fn http_handshake_and_call() {
         disabled: false,
     });
     let timeout = Duration::from_secs(5);
-    let mut connection = Connection::connect("remote", &config, timeout).expect("connect");
+    let db = std::path::Path::new(":memory:");
+    let mut connection = Connection::connect("remote", &config, timeout, db).expect("connect");
     let tools = connection.list_tools(timeout).expect("list tools");
     assert_eq!(tools[0].name, "ping");
     let result = connection
