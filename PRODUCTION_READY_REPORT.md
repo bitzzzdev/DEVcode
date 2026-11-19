@@ -163,23 +163,23 @@ cargo build --release --locked x86_64-unknown-linux-gnu
 ## Recommendation for Next Phases
 
 The Rust port has now completed all core features measured against the original specification:
-- ✅ MVP CLI tool with session management
-- ✅ HTTP API with session messaging
-- ✅ Agent execution loop with SSE streaming
-- ✅ Persistent sqlite database for sessions and events
-- ✅ Core tools (read/write/edit/glob/grep/shell)
-- ✅ Tool registry with builtin and plugin execution
-- ✅ LLM provider (Anthropic Messages API + OpenAI compat)
-- ✅ MCP v1 client (stdio + Streamable HTTP transports)
-- ✅ MCP tools, resources, and prompts
-- ✅ MCP OAuth authorization (RFC 9728/8414/4262)
-- ✅ Remote skill sources (HTTP catalog, 60s TTL, atomic refresh)
-- ✅ Ambient instructions rendering
-- ✅ ratatui TUI with sessions, transcript, /mcps, prompt input, SSE streaming
-- ✅ Native Rust plugin host (load_dir, plugin.json, peer cdylib)
-- ✅ Figma plugin contributed MCP server + official skills
-- ✅ Plugin tools join the agent loop
-- ✅ Six-target static binary release packaging (Rust)
+- MVP CLI tool with session management
+- HTTP API with session messaging
+- Agent execution loop with SSE streaming
+- Persistent sqlite database for sessions and events
+- Core tools (read/write/edit/glob/grep/shell)
+- Tool registry with builtin and plugin execution
+- LLM provider (Anthropic Messages API + OpenAI compat)
+- MCP v1 client (stdio + Streamable HTTP transports)
+- MCP tools, resources, and prompts
+- MCP OAuth authorization (RFC 9728/8414/4262)
+- Remote skill sources (HTTP catalog, 60s TTL, atomic refresh)
+- Ambient instructions rendering
+- ratatui TUI with sessions, transcript, /mcps, prompt input, SSE streaming
+- Native Rust plugin host (load_dir, plugin.json, peer cdylib)
+- Figma plugin contributed MCP server + official skills
+- Plugin tools join the agent loop
+- Six-target static binary release packaging (Rust)
 
 **Remaining blockers:**
 - None identified for Phase 13 completion
