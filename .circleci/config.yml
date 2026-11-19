@@ -86,7 +86,11 @@ jobs:
       linker:
         type: string
         default: ""
-        description: "Cross gcc to point CARGO_TARGET_<TRIPLE>_LINKER at (empty: platform default)"
+        description: "Cross gcc to point CARGO_TARGET_<TRIPLE>_LINKER at (empty: rustc self-contained musl link via cc)"
+      ring_cc:
+        type: string
+        default: ""
+        description: "musl-target C compiler for the ring build script (CC_<TRIPLE> env var)"
       rustflags:
         type: string
         default: ""
@@ -218,7 +222,7 @@ workflows:
           target: linux-x64-musl
           triple: x86_64-unknown-linux-musl
           apt: musl-tools
-          linker: musl-gcc
+          linker: ""
           rustflags: "-C target-cpu=x86-64-v3 -C target-feature=+crt-static"
           smoke: true
           filters:
@@ -229,7 +233,7 @@ workflows:
           target: linux-x64-baseline-musl
           triple: x86_64-unknown-linux-musl
           apt: musl-tools
-          linker: musl-gcc
+          linker: ""
           rustflags: "-C target-feature=+crt-static"
           smoke: true
           filters:
@@ -250,7 +254,7 @@ workflows:
           triple: aarch64-unknown-linux-musl
           apt: ""
           musl_cc: true
-          linker: aarch64-linux-musl-gcc
+          linker: ""
           rustflags: "-C target-feature=+crt-static"
           filters:
             branches:
