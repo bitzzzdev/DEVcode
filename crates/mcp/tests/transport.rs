@@ -217,6 +217,165 @@ fn runtime_unadvertised_resources_are_empty() {
 }
 
 #[test]
+fn stdio_prompts_list_and_get() {
+    let config = ServerConfig::Local(devcode_mcp::LocalConfig {
+        command: vec![fixture_path()],
+        cwd: None,
+        environment: BTreeMap::new(),
+        disabled: false,
+    });
+    let timeout = Duration::from_secs(5);
+    let db = std::path::Path::new(":memory:");
+    let mut connection = Connection::connect("fixture", &config, timeout, db).expect("connect");
+    assert!(connection.prompts_advertised());
+    let prompts = connection.list_prompts(timeout).expect("prompts/list");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["name"], "greet");
+    assert_eq!(prompts[0]["arguments"][0]["name"], "who");
+    assert_eq!(prompts[0]["arguments"][0]["required"], true);
+    let messages = connection
+        .get_prompt("greet", &BTreeMap::from([("who".to_string(), "World".to_string())]), timeout)
+        .expect("prompts/get");
+    assert_eq!(messages[0]["content"]["text"], "Hello, World!");
+    assert_eq!(messages[1]["content"]["text"], "second line");
+    // unknown prompt -> JSON-RPC error from the server
+    let error = connection.get_prompt("nope", &BTreeMap::new(), timeout);
+    assert!(error.is_err());
+}
+
+#[test]
+fn runtime_prompt_catalog_and_invoke() {
+    let mut servers = BTreeMap::new();
+    servers.insert(
+        "fixture".to_string(),
+        ServerConfig::Local(devcode_mcp::LocalConfig {
+            command: vec![fixture_path()],
+            cwd: None,
+            environment: BTreeMap::new(),
+            disabled: false,
+        }),
+    );
+    servers.insert(
+        "broken".to_string(),
+        ServerConfig::Local(devcode_mcp::LocalConfig {
+            command: vec!["devcode-mcp-fixture-does-not-exist".to_string()],
+            cwd: None,
+            environment: BTreeMap::new(),
+            disabled: false,
+        }),
+    );
+    let timeout = Duration::from_secs(5);
+    let db = std::path::Path::new(":memory:");
+    let mut runtime = devcode_mcp::Runtime::connect_all(&servers, timeout, db);
+
+    // Merged across connected servers; the broken one is skipped.
+    let catalog = runtime.prompt_catalog(None, timeout).expect("merged catalog");
+    let prompts = catalog["prompts"].as_array().unwrap();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["server"], "fixture");
+    assert_eq!(prompts[0]["name"], "greet");
+    assert_eq!(prompts[0]["description"], "greets someone");
+    assert_eq!(prompts[0]["arguments"][0]["name"], "who");
+    assert_eq!(prompts[0]["arguments"][0]["required"], true);
+
+    // Filtered to one server.
+    let catalog = runtime.prompt_catalog(Some("fixture"), timeout).expect("filtered catalog");
+    assert_eq!(catalog["prompts"].as_array().unwrap().len(), 1);
+
+    // Configured but unavailable -> empty catalog, no error.
+    let catalog = runtime.prompt_catalog(Some("broken"), timeout).expect("unavailable catalog");
+    assert_eq!(catalog["prompts"], serde_json::json!([]));
+
+    // Unknown server -> Bun's MCP.NotFoundError message.
+    let error = runtime.prompt_catalog(Some("unknown"), timeout);
+    assert_eq!(error.unwrap_err(), "MCP server not found: unknown");
+
+    // Invoke happy path: positional args map onto advertised argument names,
+    // text message parts joined with newlines and trimmed.
+    let result = runtime
+        .invoke_prompt("fixture", "greet", &["World".to_string()], timeout)
+        .expect("invoke prompt");
+    assert_eq!(result["server"], "fixture");
+    assert_eq!(result["name"], "greet");
+    assert_eq!(result["text"], "Hello, World!\nsecond line");
+
+    // Missing positional argument -> "" (Bun's args[index] ?? "").
+    let result = runtime
+        .invoke_prompt("fixture", "greet", &[], timeout)
+        .expect("invoke prompt with missing arg");
+    assert_eq!(result["text"], "Hello, !\nsecond line");
+
+    // Unknown prompt on a connected server -> not found.
+    let error = runtime.invoke_prompt("fixture", "nope", &[], timeout);
+    assert_eq!(error.unwrap_err(), "MCP prompt not found: fixture:nope");
+
+    // Configured but unavailable -> not found (Bun's orElseSucceed(undefined)).
+    let error = runtime.invoke_prompt("broken", "greet", &[], timeout);
+    assert_eq!(error.unwrap_err(), "MCP prompt not found: broken:greet");
+
+    // Unknown server -> NotFoundError message.
+    let error = runtime.invoke_prompt("unknown", "greet", &[], timeout);
+    assert_eq!(error.unwrap_err(), "MCP server not found: unknown");
+}
+
+#[test]
+fn runtime_unadvertised_prompts_are_empty() {
+    let mut servers = BTreeMap::new();
+    let mut environment = BTreeMap::new();
+    environment.insert("FIXTURE_NO_PROMPTS".to_string(), "1".to_string());
+    servers.insert(
+        "fixture".to_string(),
+        ServerConfig::Local(devcode_mcp::LocalConfig {
+            command: vec![fixture_path()],
+            cwd: None,
+            environment,
+            disabled: false,
+        }),
+    );
+    let timeout = Duration::from_secs(5);
+    let db = std::path::Path::new(":memory:");
+    let mut runtime = devcode_mcp::Runtime::connect_all(&servers, timeout, db);
+
+    let catalog = runtime.prompt_catalog(None, timeout).expect("catalog");
+    assert_eq!(catalog["prompts"], serde_json::json!([]));
+    let catalog = runtime.prompt_catalog(Some("fixture"), timeout).expect("filtered catalog");
+    assert_eq!(catalog["prompts"], serde_json::json!([]));
+
+    let error = runtime.invoke_prompt("fixture", "greet", &[], timeout);
+    assert_eq!(error.unwrap_err(), "MCP prompt not found: fixture:greet");
+}
+
+#[test]
+fn runtime_prompts_only_server_survives_tools_list_failure() {
+    let mut servers = BTreeMap::new();
+    let mut environment = BTreeMap::new();
+    environment.insert("FIXTURE_NO_TOOLS".to_string(), "1".to_string());
+    servers.insert(
+        "fixture".to_string(),
+        ServerConfig::Local(devcode_mcp::LocalConfig {
+            command: vec![fixture_path()],
+            cwd: None,
+            environment,
+            disabled: false,
+        }),
+    );
+    let timeout = Duration::from_secs(5);
+    let db = std::path::Path::new(":memory:");
+    let mut runtime = devcode_mcp::Runtime::connect_all(&servers, timeout, db);
+    assert!(runtime.tools.is_empty(), "prompts-only server must contribute no tools");
+
+    let catalog = runtime.prompt_catalog(None, timeout).expect("merged catalog");
+    let prompts = catalog["prompts"].as_array().unwrap();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["name"], "greet");
+
+    let result = runtime
+        .invoke_prompt("fixture", "greet", &["Rust".to_string()], timeout)
+        .expect("invoke prompt");
+    assert_eq!(result["text"], "Hello, Rust!\nsecond line");
+}
+
+#[test]
 fn tool_name_namespacing() {
     assert_eq!(namespaced_tool_name("figma", "whoami"), "figma_whoami");
     assert_eq!(namespaced_tool_name("my.server", "a b"), "my_server_a_b");
@@ -363,6 +522,80 @@ fn http_resources_listed_and_read() {
         .read_resource("http://fixture/demo", timeout)
         .expect("resources/read");
     assert_eq!(contents[0]["text"], "body");
+    drop(connection);
+    drop(handle);
+}
+
+#[test]
+fn http_prompts_listed_and_invoked() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let server = tiny_http::Server::from_listener(listener, None).unwrap();
+        for mut request in server.incoming_requests() {
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            let message: serde_json::Value = serde_json::from_str(&body).unwrap();
+            if message.get("method").and_then(|m| m.as_str()) == Some("notifications/initialized") {
+                let _ = request.respond(tiny_http::Response::empty(202));
+                continue;
+            }
+            let id = message
+                .get("id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let method = message["method"].as_str().unwrap_or("");
+            let result = match method {
+                "initialize" => serde_json::json!({
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": { "tools": {}, "prompts": {} },
+                    "serverInfo": { "name": "fixture", "version": "0.0.0" },
+                }),
+                "tools/list" => serde_json::json!({
+                    "tools": [{ "name": "ping", "description": "ping", "inputSchema": { "type": "object" } }],
+                }),
+                "prompts/list" => serde_json::json!({
+                    "prompts": [{ "name": "greet", "description": "greets someone", "arguments": [{ "name": "who", "required": true }] }],
+                }),
+                "prompts/get" => {
+                    let who = message["params"]["arguments"]["who"].as_str().unwrap_or("").to_owned();
+                    serde_json::json!({
+                        "messages": [{ "role": "user", "content": { "type": "text", "text": format!("Hello, {who}!") } }],
+                    })
+                }
+                _ => serde_json::json!({}),
+            };
+            let response_body =
+                serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+            let mut response = tiny_http::Response::from_string(response_body);
+            response.add_header(
+                tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..])
+                    .unwrap(),
+            );
+            response.add_header(
+                tiny_http::Header::from_bytes(&b"mcp-session-id"[..], &b"session-1"[..]).unwrap(),
+            );
+            let _ = request.respond(response);
+        }
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let config = ServerConfig::Remote(devcode_mcp::RemoteConfig {
+        url: url.clone(),
+        headers: BTreeMap::new(),
+        needs_oauth: false,
+        disabled: false,
+    });
+    let timeout = Duration::from_secs(5);
+    let db = std::path::Path::new(":memory:");
+    let mut connection = Connection::connect("remote", &config, timeout, db).expect("connect");
+    assert!(connection.prompts_advertised());
+    let prompts = connection.list_prompts(timeout).expect("prompts/list");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["name"], "greet");
+    let messages = connection
+        .get_prompt("greet", &BTreeMap::from([("who".to_string(), "HTTP".to_string())]), timeout)
+        .expect("prompts/get");
+    assert_eq!(messages[0]["content"]["text"], "Hello, HTTP!");
     drop(connection);
     drop(handle);
 }

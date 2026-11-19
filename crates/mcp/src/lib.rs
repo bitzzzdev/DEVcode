@@ -248,6 +248,7 @@ impl Connection {
                     needs_oauth: remote.needs_oauth,
                     db_path: db_path.to_path_buf(),
                     resources_advertised: false,
+                    prompts_advertised: false,
                 };
                 connection.handshake(connect_timeout)?;
                 Ok(Connection::Http(connection))
@@ -352,6 +353,47 @@ impl Connection {
         Ok(result.get("contents").cloned().unwrap_or(json!([])))
     }
 
+    /// Whether the server advertised a `prompts` capability at initialize.
+    /// Servers that do not advertise it yield empty lists / no prompt gets,
+    /// mirroring the Bun build's capability gate.
+    pub fn prompts_advertised(&self) -> bool {
+        match self {
+            Connection::Stdio(connection) => connection.prompts_advertised,
+            Connection::Http(connection) => connection.prompts_advertised,
+        }
+    }
+
+    /// List the server's prompts (MCP `prompts/list`). Raw entries, untagged
+    /// (the catalog aggregator tags them with the server name). Servers without
+    /// a `prompts` capability yield an empty list, like the Bun build.
+    pub fn list_prompts(&mut self, timeout: Duration) -> Result<Vec<Value>, String> {
+        if !self.prompts_advertised() {
+            return Ok(Vec::new());
+        }
+        let result = self.request("prompts/list", json!({}), timeout)?;
+        Ok(result
+            .get("prompts")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Invoke one prompt (MCP `prompts/get`) with positional-ish arguments.
+    /// Returns the raw `messages` array.
+    pub fn get_prompt(
+        &mut self,
+        name: &str,
+        arguments: &BTreeMap<String, String>,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let result = self.request(
+            "prompts/get",
+            json!({ "name": name, "arguments": arguments }),
+            timeout,
+        )?;
+        Ok(result.get("messages").cloned().unwrap_or(json!([])))
+    }
+
     fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
         match self {
             Connection::Stdio(stdio) => stdio.request(method, params, timeout),
@@ -390,6 +432,7 @@ pub struct StdioConnection {
     reader: StdioReader,
     next_id: u64,
     resources_advertised: bool,
+    prompts_advertised: bool,
 }
 
 impl StdioConnection {
@@ -439,6 +482,7 @@ impl StdioConnection {
             reader: StdioReader { receiver },
             next_id: 1,
             resources_advertised: false,
+            prompts_advertised: false,
         };
         let timeout = timeout.min(Duration::from_secs(10));
         connection.handshake(timeout)?;
@@ -458,6 +502,11 @@ impl StdioConnection {
         self.resources_advertised = result
             .get("capabilities")
             .and_then(|value| value.get("resources"))
+            .map(|value| value != &Value::Bool(false))
+            .unwrap_or(false);
+        self.prompts_advertised = result
+            .get("capabilities")
+            .and_then(|value| value.get("prompts"))
             .map(|value| value != &Value::Bool(false))
             .unwrap_or(false);
         self.notify("notifications/initialized", json!({}))
@@ -537,6 +586,7 @@ pub struct HttpConnection {
     needs_oauth: bool,
     db_path: PathBuf,
     resources_advertised: bool,
+    prompts_advertised: bool,
 }
 
 impl HttpConnection {
@@ -553,6 +603,11 @@ impl HttpConnection {
         self.resources_advertised = result
             .get("capabilities")
             .and_then(|value| value.get("resources"))
+            .map(|value| value != &Value::Bool(false))
+            .unwrap_or(false);
+        self.prompts_advertised = result
+            .get("capabilities")
+            .and_then(|value| value.get("prompts"))
             .map(|value| value != &Value::Bool(false))
             .unwrap_or(false);
         // fire-and-forget notification
@@ -749,7 +804,13 @@ impl Runtime {
                         }
                         runtime.connections.push((name.clone(), connection));
                     }
-                    Err(error) => eprintln!("MCP server \"{name}\" tools/list failed: {error}"),
+                    Err(error) => {
+                        // Keep the connection: prompts/resources do not depend on
+                        // tools/list (a prompts-only server is common). The run
+                        // path simply contributes no tools from this server.
+                        eprintln!("MCP server \"{name}\" tools/list failed: {error}");
+                        runtime.connections.push((name.clone(), connection));
+                    }
                 },
                 Err(error) => eprintln!("{error}"),
             }
@@ -814,6 +875,113 @@ impl Runtime {
         }
     }
 
+    /// Aggregate the MCP prompt catalog. With `server`, only that server's
+    /// catalog is returned; without, the merged catalog across every connected
+    /// server (failing servers are skipped, like the Bun build's per-server
+    /// fallback to an empty catalog). Errors from a single server propagate
+    /// only in the filtered form.
+    pub fn prompt_catalog(&mut self, server: Option<&str>, timeout: Duration) -> Result<Value, String> {
+        match server {
+            Some(name) => match self.connections.iter_mut().find(|(entry, _)| entry.as_str() == name) {
+                Some((name, connection)) => {
+                    let prompts = prompt_entries(connection, name, timeout)?;
+                    Ok(json!({ "prompts": prompts }))
+                }
+                None => {
+                    if self.configured.iter().any(|entry| entry == name) {
+                        Ok(json!({ "prompts": [] }))
+                    } else {
+                        Err(format!("MCP server not found: {name}"))
+                    }
+                }
+            },
+            None => {
+                let mut prompts = Vec::new();
+                for (name, connection) in &mut self.connections {
+                    match prompt_entries(connection, name, timeout) {
+                        Ok(entries) => prompts.extend(entries),
+                        Err(error) => eprintln!("MCP server \"{name}\" prompts/list failed: {error}"),
+                    }
+                }
+                Ok(json!({ "prompts": prompts }))
+            }
+        }
+    }
+
+    /// Invoke one MCP prompt (`prompts/get`). Positional `args` are mapped onto
+    /// the server's advertised argument names in order (missing arguments become
+    /// `""`), mirroring the Bun command plugin. Returns the joined (newline) and
+    /// trimmed text of the returned text message parts. Failures carry the
+    /// messages the Bun build produces: an unknown server errors
+    /// `MCP server not found: <name>`; everything else (configured-but-unavailable
+    /// server, prompts not advertised, prompt missing from the list, or a
+    /// `prompts/get` failure) errors `MCP prompt not found: <server>:<name>`.
+    pub fn invoke_prompt(
+        &mut self,
+        server: &str,
+        name: &str,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let not_found = || format!("MCP prompt not found: {server}:{name}");
+        let connection = self
+            .connections
+            .iter_mut()
+            .find(|(entry, _)| entry.as_str() == server)
+            .map(|(_, connection)| connection);
+        let Some(connection) = connection else {
+            return if self.configured.iter().any(|entry| entry == server) {
+                Err(not_found())
+            } else {
+                Err(format!("MCP server not found: {server}"))
+            };
+        };
+        if !connection.prompts_advertised() {
+            return Err(not_found());
+        }
+        let prompts = connection.list_prompts(timeout).unwrap_or_default();
+        let entry = prompts
+            .iter()
+            .find(|prompt| prompt.get("name").and_then(Value::as_str) == Some(name));
+        let Some(entry) = entry else {
+            return Err(not_found());
+        };
+        let argument_names: Vec<String> = entry
+            .get("arguments")
+            .and_then(Value::as_array)
+            .map(|arguments| {
+                arguments
+                    .iter()
+                    .filter_map(|argument| argument.get("name").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let arguments: BTreeMap<String, String> = argument_names
+            .iter()
+            .enumerate()
+            .map(|(index, argument_name)| {
+                (
+                    argument_name.clone(),
+                    args.get(index).cloned().unwrap_or_default(),
+                )
+            })
+            .collect();
+        let messages = connection.get_prompt(name, &arguments, timeout).map_err(|_| not_found())?;
+        let text = messages
+            .as_array()
+            .map(|messages| {
+                messages
+                    .iter()
+                    .map(|message| text_of_content(message.get("content")))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim()
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        Ok(json!({ "server": server, "name": name, "text": text }))
+    }
+
     /// Read one MCP resource. Errors carry the exact tool-facing message the
     /// Bun build produces (the runner surfaces them verbatim).
     pub fn read_resource(&mut self, server: &str, uri: &str, timeout: Duration) -> Result<Value, String> {
@@ -842,6 +1010,62 @@ impl Runtime {
     }
 }
 
+/// The server's prompt catalog, tagged with the server name:
+/// `{ server, name, description?, title?, arguments? }` per entry.
+fn prompt_entries(connection: &mut Connection, server: &str, timeout: Duration) -> Result<Vec<Value>, String> {
+    if !connection.prompts_advertised() {
+        return Ok(Vec::new());
+    }
+    Ok(connection
+        .list_prompts(timeout)?
+        .into_iter()
+        .filter_map(|prompt| prompt_entry(server, &prompt))
+        .collect())
+}
+
+fn prompt_entry(server: &str, prompt: &Value) -> Option<Value> {
+    let name = prompt.get("name")?.as_str()?.to_owned();
+    let mut entry = json!({ "server": server, "name": name });
+    if let Some(title) = prompt.get("title").and_then(Value::as_str) {
+        entry["title"] = json!(title);
+    }
+    if let Some(description) = prompt.get("description").and_then(Value::as_str) {
+        entry["description"] = json!(description);
+    }
+    if let Some(arguments) = prompt.get("arguments").and_then(Value::as_array) {
+        let arguments: Vec<Value> = arguments
+            .iter()
+            .filter_map(|argument| {
+                let name = argument.get("name")?.as_str()?.to_owned();
+                let mut entry = json!({ "name": name });
+                if let Some(description) = argument.get("description").and_then(Value::as_str) {
+                    entry["description"] = json!(description);
+                }
+                if let Some(required) = argument.get("required").and_then(Value::as_bool) {
+                    entry["required"] = json!(required);
+                }
+                Some(entry)
+            })
+            .collect();
+        entry["arguments"] = json!(arguments);
+    }
+    Some(entry)
+}
+
+/// Bun's `promptMessageText`: string contents pass through; text message
+/// parts yield `text`; anything else yields "".
+fn text_of_content(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Object(object)) => {
+            if object.get("type").and_then(Value::as_str) != Some("text") {
+                return String::new();
+            }
+            object.get("text").and_then(Value::as_str).unwrap_or_default().to_owned()
+        }
+        _ => String::new(),
+    }
+}
 /// One server's catalog, tagged with the server name (Bun's `toCatalog`).
 fn catalog_from(connection: &mut Connection, server: &str, timeout: Duration) -> Result<(Vec<Value>, Vec<Value>), String> {
     let resources = connection

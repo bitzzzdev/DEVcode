@@ -41,6 +41,14 @@ pub struct McpDialog {
     pub error: Option<String>,
 }
 
+/// The /prompts overlay: the merged MCP prompt catalog across connected
+/// servers. Enter runs a prompt that takes no arguments immediately, or drops
+/// `/server:name ` into the input for the user to complete.
+pub struct PromptsDialog {
+    pub prompts: Vec<McpPromptEntry>,
+    pub selected: usize,
+}
+
 pub struct App {
     base: String,
     auth: String,
@@ -54,6 +62,10 @@ pub struct App {
     status: String,
     status_err: bool,
     mcp: Option<McpDialog>,
+    prompts: Option<PromptsDialog>,
+    // merged prompt catalog cache for the `/server:name args` submit path;
+    // populated on /prompts open, or lazily on first candidate submit
+    mcp_prompt_cache: Option<Vec<McpPromptEntry>>,
     // number of messages last seen for the selected session; poll rebuilds on change
     seen_len: usize,
     last_sessions_refresh: Instant,
@@ -88,6 +100,8 @@ pub fn run() -> ExitCode {
         status: String::new(),
         status_err: false,
         mcp: None,
+        prompts: None,
+        mcp_prompt_cache: None,
         seen_len: usize::MAX,
         last_sessions_refresh: Instant::now() - Duration::from_secs(60),
         last_messages_refresh: Instant::now() - Duration::from_secs(60),
@@ -151,19 +165,32 @@ fn ensure_service(
 }
 
 fn http_get(client: &App, path: &str) -> Result<Value, String> {
+    http_get_with_timeout(client, path, Duration::from_secs(10))
+}
+
+fn http_get_with_timeout(client: &App, path: &str, timeout: Duration) -> Result<Value, String> {
     let response = ureq::get(&format!("{}{}", client.base, path))
         .set("authorization", &client.auth)
-        .timeout(Duration::from_secs(10))
+        .timeout(timeout)
         .call()
         .map_err(http_error)?;
     response.into_json::<Value>().map_err(|e| e.to_string())
 }
 
 fn http_post(client: &App, path: &str, body: &Value) -> Result<Value, String> {
+    http_post_with_timeout(client, path, body, Duration::from_secs(10))
+}
+
+fn http_post_with_timeout(
+    client: &App,
+    path: &str,
+    body: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
     let response = ureq::post(&format!("{}{}", client.base, path))
         .set("authorization", &client.auth)
         .set("content-type", "application/json")
-        .timeout(Duration::from_secs(10))
+        .timeout(timeout)
         .send_json(body.clone())
         .map_err(http_error)?;
     response.into_json::<Value>().map_err(|e| e.to_string())
@@ -304,6 +331,145 @@ pub fn parse_command(input: &str) -> (&str, &str) {
     }
 }
 
+/// One MCP prompt from the merged catalog (Bun's `Mcp.Prompt & { server }`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct McpPromptEntry {
+    pub server: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Argument names in advertised order; empty when the prompt takes none.
+    pub arguments: Vec<String>,
+}
+
+/// Sanitize one command-name part (Bun: [^a-zA-Z0-9_-] -> `_`).
+pub fn sanitize_command_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect()
+}
+
+/// The Bun slash-command name for an MCP prompt: `server:prompt`, both sanitized.
+pub fn mcp_prompt_command_name(server: &str, name: &str) -> String {
+    format!("{}:{}", sanitize_command_part(server), sanitize_command_part(name))
+}
+
+/// Parse positional prompt arguments from an argument string, mirroring Bun's
+/// `argsRegex` + `quoteTrimRegex`: `[Image N]` tokens, "double quoted",
+/// 'single quoted' or bare runs, with quotes trimmed. Unterminated quotes
+/// match nothing and are ignored (Bun behaves the same).
+pub fn parse_prompt_arguments(input: &str) -> Vec<String> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut args = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let character = chars[index];
+        if character.is_whitespace() {
+            index += 1;
+            continue;
+        }
+        if character == '[' {
+            if let Some(length) = match_image_token(&chars[index..]) {
+                args.push(chars[index..index + length].iter().collect());
+                index += length;
+                continue;
+            }
+        }
+        if character == '"' || character == '\'' {
+            let quote = character;
+            let mut cursor = index + 1;
+            while cursor < chars.len() && chars[cursor] != quote {
+                cursor += 1;
+            }
+            if cursor < chars.len() {
+                args.push(chars[index + 1..cursor].iter().collect());
+                index = cursor + 1;
+            } else {
+                // Unterminated quote: Bun's regex matches nothing at the quote
+                // itself; skip it and let the run read as a bare token.
+                index += 1;
+            }
+            continue;
+        }
+        let start = index;
+        while index < chars.len()
+            && !chars[index].is_whitespace()
+            && chars[index] != '"'
+            && chars[index] != '\''
+        {
+            index += 1;
+        }
+        args.push(chars[start..index].iter().collect());
+    }
+    args
+}
+
+/// Case-insensitive match of `[Image\s+\d+]` at the start of `chars`; returns its length.
+fn match_image_token(chars: &[char]) -> Option<usize> {
+    let rest: String = chars.iter().collect();
+    let lower = rest.to_ascii_lowercase();
+    let prefix = "[image";
+    if !lower.starts_with(prefix) {
+        return None;
+    }
+    let mut index = prefix.len();
+    let mut saw_space = false;
+    while index < rest.len() && rest.as_bytes()[index].is_ascii_whitespace() {
+        saw_space = true;
+        index += 1;
+    }
+    if !saw_space {
+        return None;
+    }
+    let digit_start = index;
+    while index < rest.len() && rest.as_bytes()[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == digit_start {
+        return None;
+    }
+    if index < rest.len() && rest.as_bytes()[index] == b']' {
+        return Some(index + 1);
+    }
+    None
+}
+
+/// Parse the /api/mcp/prompts wire into entries. Pure; tested.
+pub fn mcp_prompt_rows(body: &Value) -> Vec<McpPromptEntry> {
+    body.get("data")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let server = row.get("server")?.as_str()?.to_owned();
+                    let name = row.get("name")?.as_str()?.to_owned();
+                    let arguments = row
+                        .get("arguments")
+                        .and_then(Value::as_array)
+                        .map(|arguments| {
+                            arguments
+                                .iter()
+                                .filter_map(|argument| {
+                                    argument.get("name").and_then(Value::as_str).map(str::to_owned)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(McpPromptEntry {
+                        server,
+                        name,
+                        description: row
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        arguments,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 impl App {
     fn set_status(&mut self, message: String, err: bool) {
         self.status = message;
@@ -413,8 +579,11 @@ impl App {
     }
 
     fn send(&mut self) {
-        let (command, argument) = parse_command(&self.input);
-        match command {
+        let (command, argument) = {
+            let (command, argument) = parse_command(&self.input);
+            (command.to_owned(), argument.to_owned())
+        };
+        match command.as_str() {
             "quit" | "exit" => return, // handled by caller via should_quit
             "new" => {
                 self.input.clear();
@@ -424,6 +593,11 @@ impl App {
             "mcps" | "mcp" => {
                 self.input.clear();
                 self.open_mcp();
+                return;
+            }
+            "prompts" => {
+                self.input.clear();
+                self.open_prompts();
                 return;
             }
             "model" => {
@@ -441,11 +615,106 @@ impl App {
             }
             _ => {}
         }
+        // MCP prompt slash commands (Bun: `/server:prompt args...`).
+        if command.contains(':') && self.resolve_mcp_prompt_command(&command, &argument) {
+            return;
+        }
         let text = argument.to_owned();
         if text.is_empty() {
+            if !command.is_empty() {
+                self.set_status(format!("unknown command: /{command}"), true);
+                self.input.clear();
+            }
             return;
         }
         self.input.clear();
+        self.submit_text(&text);
+    }
+
+    /// The merged MCP prompt catalog, cached in memory. Lazily fetches on a
+    /// cache miss; returns None (status set on error) when the fetch fails.
+    fn mcp_prompt_catalog(&mut self) -> Option<Vec<McpPromptEntry>> {
+        if let Some(cache) = &self.mcp_prompt_cache {
+            return Some(cache.clone());
+        }
+        match http_get_with_timeout(self, "/api/mcp/prompts", Duration::from_secs(30)) {
+            Ok(body) => {
+                let prompts = mcp_prompt_rows(&body);
+                self.mcp_prompt_cache = Some(prompts.clone());
+                Some(prompts)
+            }
+            Err(error) => {
+                self.set_status(error, true);
+                None
+            }
+        }
+    }
+
+    /// Resolve `command` against the cached catalog (`sanitized_server:sanitized_prompt`),
+    /// invoke the prompt with the positional arguments in `argument`, and submit
+    /// the resulting text as a user message. Returns true when the command was
+    /// handled (or failed with a status message).
+    fn resolve_mcp_prompt_command(&mut self, command: &str, argument: &str) -> bool {
+        let Some(catalog) = self.mcp_prompt_catalog() else {
+            self.input.clear();
+            return true; // error already shown
+        };
+        let Some(entry) = catalog
+            .into_iter()
+            .find(|entry| mcp_prompt_command_name(&entry.server, &entry.name) == command)
+        else {
+            return false; // not an MCP prompt command
+        };
+        self.input.clear();
+        let args = parse_prompt_arguments(argument);
+        match self.invoke_mcp_prompt(&entry, args) {
+            Ok(text) => {
+                let text = text.trim().to_owned();
+                if text.is_empty() {
+                    self.set_status("prompt returned no text".to_owned(), true);
+                } else {
+                    self.submit_text(&text);
+                }
+            }
+            Err(error) => self.set_status(error, true),
+        }
+        true
+    }
+
+    fn invoke_mcp_prompt(
+        &self,
+        entry: &McpPromptEntry,
+        args: Vec<String>,
+    ) -> Result<String, String> {
+        let body = json!({ "server": entry.server, "name": entry.name, "args": args });
+        let response =
+            http_post_with_timeout(self, "/api/mcp/prompts/get", &body, Duration::from_secs(30))?;
+        Ok(response
+            .get("data")
+            .and_then(|data| data.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned())
+    }
+
+    fn open_prompts(&mut self) {
+        match http_get_with_timeout(self, "/api/mcp/prompts", Duration::from_secs(30)) {
+            Ok(body) => {
+                let prompts = mcp_prompt_rows(&body);
+                self.mcp_prompt_cache = Some(prompts.clone());
+                self.prompts = Some(PromptsDialog {
+                    prompts,
+                    selected: 0,
+                });
+            }
+            Err(error) => self.set_status(error, true),
+        }
+    }
+
+    fn submit_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         let id = match self.selected_id() {
             Some(id) => id,
             None => match self.create_session() {
@@ -562,7 +831,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .model
         .as_deref()
         .unwrap_or("model unset (/model provider/model)");
-    let help = " ↑↓ sessions · Enter send · /new /mcps · PgUp/PgDn scroll · Ctrl-C quit";
+    let help = " ↑↓ sessions · Enter send · /new /mcps /prompts · PgUp/PgDn scroll · Ctrl-C quit";
     let status_line = if app.status.is_empty() {
         format!(" {model}{help}")
     } else {
@@ -577,6 +846,123 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
     if app.mcp.is_some() {
         draw_mcp(frame, app);
+    }
+    if app.prompts.is_some() {
+        draw_prompts(frame, app);
+    }
+}
+
+fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
+    let Some(dialog) = &app.prompts else {
+        return;
+    };
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).clamp(36, 76);
+    let height = area.height.saturating_sub(4).clamp(8, 20);
+    let rect = ratatui::layout::Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" MCP prompts ({}) ", dialog.prompts.len()));
+
+    if dialog.prompts.is_empty() {
+        let empty = Paragraph::new(
+            "No MCP prompts found.\n\nServers declare prompts with a prompts capability. Esc to close.",
+        )
+        .block(block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(empty, rect);
+        return;
+    }
+
+    let items: Vec<ListItem> = dialog
+        .prompts
+        .iter()
+        .map(|entry| {
+            let command = mcp_prompt_command_name(&entry.server, &entry.name);
+            let args = entry.arguments.join(" ");
+            let description = entry.description.clone().unwrap_or_default();
+            let mut spans = vec![Span::styled(
+                format!("/{command}"),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            if !args.is_empty() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(args, Style::default().fg(Color::DarkGray)));
+            }
+            if !description.is_empty() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(description, Style::default().fg(Color::Gray)));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    let mut list_state = ListState::default();
+    list_state.select(Some(
+        dialog.selected.min(dialog.prompts.len().saturating_sub(1)),
+    ));
+    let list = List::new(items)
+        .block(block.title_bottom(" ↑↓ select · Enter run · Esc close "))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("");
+    frame.render_stateful_widget(list, rect, &mut list_state);
+}
+
+fn handle_prompts_key(app: &mut App, code: crossterm::event::KeyCode) {
+    use crossterm::event::KeyCode;
+    match code {
+        KeyCode::Esc => app.prompts = None,
+        KeyCode::Up | KeyCode::Down => {
+            let delta: isize = if code == KeyCode::Up { -1 } else { 1 };
+            if let Some(dialog) = app.prompts.as_mut() {
+                if dialog.prompts.is_empty() {
+                    return;
+                }
+                let last = dialog.prompts.len() as isize - 1;
+                dialog.selected = (dialog.selected as isize + delta).clamp(0, last) as usize;
+            }
+        }
+        KeyCode::Enter => {
+            let entry = app
+                .prompts
+                .as_ref()
+                .and_then(|dialog| dialog.prompts.get(dialog.selected).cloned());
+            let Some(entry) = entry else {
+                return;
+            };
+            if entry.arguments.is_empty() {
+                // No arguments: run it now and send the result as a user message.
+                app.prompts = None;
+                match app.invoke_mcp_prompt(&entry, Vec::new()) {
+                    Ok(text) => {
+                        let text = text.trim().to_owned();
+                        if text.is_empty() {
+                            app.set_status("prompt returned no text".to_owned(), true);
+                        } else {
+                            app.submit_text(&text);
+                        }
+                    }
+                    Err(error) => app.set_status(error, true),
+                }
+            } else {
+                // Needs arguments: drop `/server:name ` into the input for the
+                // user to complete, like the Bun command palette.
+                app.input = format!(
+                    "/{} ",
+                    mcp_prompt_command_name(&entry.server, &entry.name)
+                );
+                app.prompts = None;
+            }
+        }
+        KeyCode::Backspace => {}
+        _ => {}
     }
 }
 
@@ -747,6 +1133,10 @@ fn event_loop(app: &mut App, stdout: &mut Stdout) -> Result<(), Box<dyn std::err
                     if quit {
                         return Ok(())
                     }
+                    if app.prompts.is_some() {
+                        handle_prompts_key(app, key.code);
+                        continue;
+                    }
                     if app.mcp.is_some() {
                         handle_mcp_key(app, key.code);
                         continue;
@@ -845,6 +1235,8 @@ mod tests {
             status: String::new(),
             status_err: false,
             mcp: None,
+            prompts: None,
+            mcp_prompt_cache: None,
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
@@ -874,6 +1266,103 @@ mod tests {
         assert_eq!(parse_command("   "), ("", ""));
         assert_eq!(parse_command("/quit"), ("quit", ""));
         assert_eq!(parse_command("/mcps"), ("mcps", ""));
+        assert_eq!(parse_command("/prompts"), ("prompts", ""));
+        assert_eq!(parse_command("/fixture:greet a b"), ("fixture:greet", "a b"));
+    }
+
+    #[test]
+    fn mcp_prompt_rows_parse_wire() {
+        let body = json!({ "data": [
+            { "server": "figma", "name": "diagram", "description": "draw it", "arguments": [{ "name": "what", "required": true }] },
+            { "server": "fs", "name": "plain" },
+            { "server": "missing-name" },
+        ] });
+        let rows = mcp_prompt_rows(&body);
+        assert_eq!(rows.len(), 2, "incomplete rows are skipped");
+        assert_eq!(rows[0].server, "figma");
+        assert_eq!(rows[0].name, "diagram");
+        assert_eq!(rows[0].description.as_deref(), Some("draw it"));
+        assert_eq!(rows[0].arguments, vec!["what".to_string()]);
+        assert_eq!(rows[1].description, None);
+        assert_eq!(rows[1].arguments, Vec::<String>::new());
+        assert_eq!(mcp_prompt_rows(&json!({})).len(), 0);
+        assert_eq!(mcp_prompt_rows(&json!({ "data": null })).len(), 0);
+    }
+
+    #[test]
+    fn sanitize_and_command_name() {
+        assert_eq!(sanitize_command_part("my server!"), "my_server_");
+        assert_eq!(sanitize_command_part("ok-name_1"), "ok-name_1");
+        assert_eq!(sanitize_command_part(""), "");
+        assert_eq!(mcp_prompt_command_name("my srv", "do it!"), "my_srv:do_it_");
+    }
+
+    #[test]
+    fn prompt_arguments_parsing() {
+        assert_eq!(parse_prompt_arguments("a b c"), vec!["a", "b", "c"]);
+        assert_eq!(
+            parse_prompt_arguments(r#"say "hello world" now"#),
+            vec!["say", "hello world", "now"]
+        );
+        assert_eq!(
+            parse_prompt_arguments("say 'it's me'"),
+            vec!["say", "it", "s", "me"]
+        );
+        assert_eq!(parse_prompt_arguments(""), Vec::<String>::new());
+        assert_eq!(parse_prompt_arguments("one  two   three"), vec!["one", "two", "three"]);
+        assert_eq!(parse_prompt_arguments("[Image 3] describe"), vec!["[Image 3]", "describe"]);
+        assert_eq!(parse_prompt_arguments("[image 42]"), vec!["[image 42]"]);
+        assert_eq!(parse_prompt_arguments("[Image x]"), vec!["[Image", "x]"]);
+        assert_eq!(parse_prompt_arguments(r#""unterminated"#), vec!["unterminated"]);
+        assert_eq!(parse_prompt_arguments(r#""""#), vec![""]);
+        assert_eq!(
+            parse_prompt_arguments(r#"a "b c" d 'e f' g"#),
+            vec!["a", "b c", "d", "e f", "g"]
+        );
+    }
+
+    #[test]
+    fn prompts_dialog_renders_command_names() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            sessions: vec![],
+            selected: 0,
+            transcript: vec![],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: Some(PromptsDialog {
+                prompts: vec![McpPromptEntry {
+                    server: "fixture".to_owned(),
+                    name: "greet".to_owned(),
+                    description: Some("greets someone".to_owned()),
+                    arguments: vec!["who".to_owned()],
+                }],
+                selected: 0,
+            }),
+            mcp_prompt_cache: None,
+            seen_len: 0,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("MCP prompts"), "dialog title missing");
+        assert!(text.contains("/fixture:greet"), "command name missing");
+        assert!(text.contains("who"), "argument hint missing");
     }
 
     #[test]
@@ -933,6 +1422,8 @@ mod tests {
                 detail: false,
                 error: None,
             }),
+            prompts: None,
+            mcp_prompt_cache: None,
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),

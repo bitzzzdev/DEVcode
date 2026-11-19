@@ -38,14 +38,7 @@ fn mcp_plugin_servers() -> &'static [(String, serde_json::Value)] {
 /// every OAuth remote (Bun registers the integration regardless of disabled state).
 /// The envelope is `{ "data": [...] }` (documented deviation: no Bun `location` half).
 fn mcp_list(paths: &devcode_util::Paths, contributed: &[(String, serde_json::Value)]) -> Vec<serde_json::Value> {
-    let config = match devcode_mcp::load_config(&paths.config.join("devcode.jsonc")) {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("failed to load mcp config: {error}");
-            devcode_mcp::McpConfig::default()
-        }
-    };
-    let servers = devcode_runner::merge_contributed_servers(config.servers, contributed);
+    let servers = load_mcp_servers(paths, contributed);
     let has_oauth_remote = servers
         .values()
         .any(|server| matches!(server, devcode_mcp::ServerConfig::Remote(remote) if remote.needs_oauth));
@@ -102,6 +95,87 @@ fn mcp_list(paths: &devcode_util::Paths, contributed: &[(String, serde_json::Val
             serde_json::Value::Object(entry)
         })
         .collect()
+}
+
+/// The /api/mcp/prompts listing. Connects to every enabled server per HTTP call
+/// (Rust MCP connections are opened per run; there is no service-owned registry),
+/// merges the prompt catalogs and tags each entry with its server. Servers that
+/// fail to connect or list are skipped (reported on stderr), matching the Bun
+/// build's per-server fallback to an empty catalog.
+fn mcp_prompts(
+    paths: &devcode_util::Paths,
+    contributed: &[(String, serde_json::Value)],
+) -> Vec<serde_json::Value> {
+    let servers = load_mcp_servers(paths, contributed);
+    let db_path = devcode_core::database_path(paths);
+    let timeout = std::time::Duration::from_secs(10);
+    let mut runtime = devcode_mcp::Runtime::connect_all(&servers, timeout, &db_path);
+    match runtime.prompt_catalog(None, timeout) {
+        Ok(catalog) => catalog["prompts"].as_array().cloned().unwrap_or_default(),
+        Err(error) => {
+            eprintln!("failed to list MCP prompts: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// The /api/mcp/prompts/get invoke. Body: `{ server, name, args?: string[] }`
+/// where args are positional and mapped onto the server's advertised argument
+/// names in order (missing -> ""), mirroring the Bun command plugin. Failures
+/// are 404s with the Bun build's messages: an unknown server errors
+/// "MCP server not found: <name>"; everything else (configured but unavailable,
+/// prompts not advertised, prompt missing, or a `prompts/get` failure) errors
+/// "MCP prompt not found: <server>:<name>".
+fn mcp_prompt_get(
+    body: &[u8],
+    paths: &devcode_util::Paths,
+    contributed: &[(String, serde_json::Value)],
+) -> (u16, Option<serde_json::Value>) {
+    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap_or_else(|_| json!({}));
+    let Some(server) = parsed.get("server").and_then(serde_json::Value::as_str).map(str::to_owned) else {
+        return (400, Some(json!({ "message": "server is required" })));
+    };
+    let Some(name) = parsed.get("name").and_then(serde_json::Value::as_str).map(str::to_owned) else {
+        return (400, Some(json!({ "message": "name is required" })));
+    };
+    let args: Vec<String> = parsed
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .map(|args| {
+            args.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut servers = load_mcp_servers(paths, contributed);
+    let Some(config) = servers.remove(&server) else {
+        // Not in user config nor contributed by plugins: Bun's MCP.NotFoundError.
+        return (404, Some(json!({ "message": format!("MCP server not found: {server}") })));
+    };
+    let single = std::collections::BTreeMap::from([(server.clone(), config)]);
+    let db_path = devcode_core::database_path(paths);
+    let timeout = std::time::Duration::from_secs(10);
+    let mut runtime = devcode_mcp::Runtime::connect_all(&single, timeout, &db_path);
+    match runtime.invoke_prompt(&server, &name, &args, timeout) {
+        Ok(result) => (200, Some(json!({ "data": result }))),
+        Err(message) => (404, Some(json!({ "message": message }))),
+    }
+}
+
+/// The merged MCP server map from user config plus plugin-contributed servers.
+fn load_mcp_servers(
+    paths: &devcode_util::Paths,
+    contributed: &[(String, serde_json::Value)],
+) -> std::collections::BTreeMap<String, devcode_mcp::ServerConfig> {
+    let config = match devcode_mcp::load_config(&paths.config.join("devcode.jsonc")) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("failed to load mcp config: {error}");
+            devcode_mcp::McpConfig::default()
+        }
+    };
+    devcode_runner::merge_contributed_servers(config.servers, contributed)
 }
 
 /// Load the native plugins once at startup and return both halves: the /api/plugin
@@ -1197,6 +1271,8 @@ fn route(
         ("GET", ["api", "session", id, "message"]) => list_messages(id, &params, conn),
         ("GET", ["api", "plugin"]) => (200, Some(json!({ "data": plugin_list() }))),
         ("GET", ["api", "mcp"]) => (200, Some(json!({ "data": mcp_list(paths, mcp_plugin_servers()) }))),
+        ("GET", ["api", "mcp", "prompts"]) => (200, Some(json!({ "data": mcp_prompts(paths, mcp_plugin_servers()) }))),
+        ("POST", ["api", "mcp", "prompts", "get"]) => mcp_prompt_get(body, paths, mcp_plugin_servers()),
         _ => (404, Some(json!({"message": "Not Found"}))),
     }
 }
@@ -1241,7 +1317,7 @@ fn openapi() -> serde_json::Value {
         "info": {
             "title": "devcode HttpApi",
             "version": devcode_util::VERSION,
-            "description": "Rust port of the DEVcode HttpApi surface. Served so far: /api/info, /api/session, /api/session/{sessionID}, /api/session/{sessionID}/message, /api/plugin, /api/mcp.",
+            "description": "Rust port of the DEVcode HttpApi surface. Served so far: /api/info, /api/session, /api/session/{sessionID}, /api/session/{sessionID}/message, /api/plugin, /api/mcp, /api/mcp/prompts.",
         },
         "paths": {
             "/api/info": {
@@ -1294,6 +1370,22 @@ fn openapi() -> serde_json::Value {
                     "summary": "List MCP servers",
                     "description": "Configured MCP servers (user config plus plugin contributions) with a status derived from configuration and the credential store: disabled, needs_auth (OAuth remote without a stored credential), or pending. Rust connections are opened per run, so no live connected state is reported.",
                     "responses": { "200": { "description": "Configured MCP servers" } },
+                },
+            },
+            "/api/mcp/prompts": {
+                "get": {
+                    "tags": ["mcp"],
+                    "summary": "List MCP prompts",
+                    "description": "Prompt catalog merged across connected servers (user config plus plugin contributions); each entry carries the server it came from. Rust connections are opened per HTTP call and servers that fail are skipped.",
+                    "responses": { "200": { "description": "Merged MCP prompt catalog" } },
+                },
+            },
+            "/api/mcp/prompts/get": {
+                "post": {
+                    "tags": ["mcp"],
+                    "summary": "Invoke an MCP prompt",
+                    "description": "Body { server, name, args?: string[] }; positional args map onto the server's advertised argument names in order (missing -> \"\"). Returns the joined, trimmed text of the returned text message parts. 404 with Bun's messages: unknown server -> MCP server not found: <name>; everything else -> MCP prompt not found: <server>:<name>.",
+                    "responses": { "200": { "description": "Invoked prompt text" }, "404": { "description": "Server or prompt not found" } },
                 },
             },
             "/api/session/{sessionID}/prompt": {
@@ -1784,6 +1876,148 @@ mod tests {
         assert!(integration_id.starts_with("mcp_"), "integrationID shape: {integration_id}");
         assert_eq!(integration_id, devcode_mcp::oauth::CredentialStore::integration_id("remote-oauth", "https://mcp.example.com/"));
         assert!(entry("local-server").get("integrationID").is_none());
+    }
+
+    fn mcp_loopback_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let server = tiny_http::Server::from_listener(listener, None).unwrap();
+            for mut request in server.incoming_requests() {
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                let message: serde_json::Value = serde_json::from_str(&body).unwrap();
+                if message.get("method").and_then(|m| m.as_str()) == Some("notifications/initialized") {
+                    let _ = request.respond(tiny_http::Response::empty(202));
+                    continue;
+                }
+                let id = message
+                    .get("id")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let method = message["method"].as_str().unwrap_or("");
+                let result = match method {
+                    "initialize" => serde_json::json!({
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": { "tools": {}, "prompts": {} },
+                        "serverInfo": { "name": "fixture", "version": "0.0.0" },
+                    }),
+                    "tools/list" => serde_json::json!({
+                        "tools": [{ "name": "ping", "description": "ping", "inputSchema": { "type": "object" } }],
+                    }),
+                    "prompts/list" => serde_json::json!({
+                        "prompts": [{ "name": "greet", "description": "greets someone", "arguments": [{ "name": "who", "required": true }] }],
+                    }),
+                    "prompts/get" => {
+                        let who = message["params"]["arguments"]["who"].as_str().unwrap_or("").to_owned();
+                        serde_json::json!({
+                            "messages": [{ "role": "user", "content": { "type": "text", "text": format!("Hello, {who}!") } }],
+                        })
+                    }
+                    _ => serde_json::json!({}),
+                };
+                let response_body =
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+                let mut response = tiny_http::Response::from_string(response_body);
+                response.add_header(
+                    tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..])
+                        .unwrap(),
+                );
+                response.add_header(
+                    tiny_http::Header::from_bytes(&b"mcp-session-id"[..], &b"session-1"[..])
+                        .unwrap(),
+                );
+                let _ = request.respond(response);
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn mcp_prompts_lists_merged_catalog_and_invokes() {
+        let url = mcp_loopback_server();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut t = temp_db("mcp-prompts");
+        let config = format!(
+            r#"{{ "mcp": {{ "servers": {{ "fixture": {{ "type": "remote", "url": "{url}" }}, "broken": {{ "type": "local", "command": ["devcode-mcp-fixture-does-not-exist"] }} }} }} }}"#
+        );
+        std::fs::write(t.paths.config.join("devcode.jsonc"), &config).unwrap();
+        let c = &mut t.db.conn;
+
+        // The broken server is skipped; the catalog is merged and server-tagged.
+        let (status, body) = call(&t.paths, c, "GET", "/api/mcp/prompts", "", "", 1000);
+        assert_eq!(status, 200);
+        let data = body.unwrap()["data"].as_array().unwrap().clone();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["server"], "fixture");
+        assert_eq!(data[0]["name"], "greet");
+        assert_eq!(data[0]["arguments"][0]["name"], "who");
+        assert_eq!(data[0]["arguments"][0]["required"], true);
+
+        // Invoke: positional args map onto advertised argument names.
+        let (status, body) = call(
+            &t.paths,
+            c,
+            "POST",
+            "/api/mcp/prompts/get",
+            "",
+            r#"{"server":"fixture","name":"greet","args":["World"]}"#,
+            1001,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body.unwrap()["data"]["text"], "Hello, World!");
+
+        // Missing positional argument -> "" (Bun's args[index] ?? "").
+        let (status, body) = call(
+            &t.paths,
+            c,
+            "POST",
+            "/api/mcp/prompts/get",
+            "",
+            r#"{"server":"fixture","name":"greet"}"#,
+            1002,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body.unwrap()["data"]["text"], "Hello, !");
+
+        // Unknown server -> Bun's MCP.NotFoundError message.
+        let (status, body) = call(
+            &t.paths,
+            c,
+            "POST",
+            "/api/mcp/prompts/get",
+            "",
+            r#"{"server":"nope","name":"greet"}"#,
+            1003,
+        );
+        assert_eq!(status, 404);
+        assert_eq!(body.unwrap()["message"], "MCP server not found: nope");
+
+        // Configured but unavailable -> Bun's "MCP prompt not found" message.
+        let (status, body) = call(
+            &t.paths,
+            c,
+            "POST",
+            "/api/mcp/prompts/get",
+            "",
+            r#"{"server":"broken","name":"greet"}"#,
+            1004,
+        );
+        assert_eq!(status, 404);
+        assert_eq!(body.unwrap()["message"], "MCP prompt not found: broken:greet");
+
+        // Unknown prompt on a connected server -> "MCP prompt not found".
+        let (status, body) = call(
+            &t.paths,
+            c,
+            "POST",
+            "/api/mcp/prompts/get",
+            "",
+            r#"{"server":"fixture","name":"nope"}"#,
+            1005,
+        );
+        assert_eq!(status, 404);
+        assert_eq!(body.unwrap()["message"], "MCP prompt not found: fixture:nope");
     }
 
     #[test]
