@@ -295,6 +295,7 @@ name = "devcode-mcp"
 version = "0.1.0-rust"
 dependencies = [
  "base64",
+ "devcode-util",
  "ring",
  "rusqlite",
  "serde",
@@ -366,7 +367,13 @@ dependencies = [
 name = "devcode-skills"
 version = "0.1.0-rust"
 dependencies = [
+ "devcode-util",
+ "serde",
  "serde_json",
+ "sha1",
+ "tiny_http",
+ "ureq",
+ "url",
 ]
 
 [[package]]

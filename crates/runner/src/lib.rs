@@ -358,8 +358,12 @@ pub fn merge_contributed_servers(
 
 /// Load embedded skills, those under `<config>/skills/`, and skills contributed by
 /// plugins (Bun semantics: an existing skill with the same id is preserved).
-fn load_skills(paths: &devcode_util::Paths, plugins: &devcode_plugin::Host) -> Vec<devcode_skills::Skill> {
-    let mut skills = devcode_skills::load(&paths.config, env!("CARGO_PKG_VERSION"));
+fn load_skills(
+    paths: &devcode_util::Paths,
+    plugins: &devcode_plugin::Host,
+    directory: &Path,
+) -> Vec<devcode_skills::Skill> {
+    let mut skills = devcode_skills::load(paths, directory, env!("CARGO_PKG_VERSION"));
     for skill in plugins.skills() {
         if !skills.iter().any(|existing| existing.id == skill.id) {
             skills.push(skill);
@@ -556,7 +560,7 @@ fn load_configured_sources(config_file: &Path) -> Vec<String> {
     let Ok(raw) = std::fs::read_to_string(config_file) else {
         return Vec::new();
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&devcode_mcp::strip_jsonc(&raw)) else {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&devcode_util::strip_jsonc(&raw)) else {
         eprintln!("failed to parse {}", config_file.display());
         return Vec::new();
     };
@@ -640,7 +644,7 @@ fn step_loop(
     plugins: &devcode_plugin::Host,
     mcp: &mut devcode_mcp::Runtime,
 ) -> Result<(), String> {
-    let skills = load_skills(paths, plugins);
+    let skills = load_skills(paths, plugins, directory);
     let system = system_prompt(paths, &skills, directory);
     let model_json = model_json(model);
     let tools = tool_specs(plugins, mcp);
@@ -1324,7 +1328,7 @@ mod tests {
             name: "fixture_echo".into(),
             arguments: r#"{"text":"hello"}"#.into(),
         };
-        let skills = load_skills(&paths, &host);
+        let skills = load_skills(&paths, &host, &dir);
         let part = execute_tool(
             &paths,
             &call,
@@ -1347,7 +1351,7 @@ mod tests {
             name: "shell".into(),
             arguments: r#"{"command":"printf builtin-wins"}"#.into(),
         };
-        let skills = load_skills(&paths, &host);
+        let skills = load_skills(&paths, &host, &dir);
         let part = execute_tool(
             &paths,
             &call,

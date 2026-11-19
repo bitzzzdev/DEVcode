@@ -3,9 +3,13 @@
 //!
 //! Sources:
 //!   1. Built-in skills embedded at compile time (devcode, report).
-//!   2. `<config>/skills/**/SKILL.md` (BFS, max depth 6, dot directories skipped).
-//!      A `.md` file directly inside `<config>/skills/` is also treated as a skill
-//!      (Bun's depth-0 `.md` rule).
+//!   2. `<config>/skills/**/SKILL.md` and `<config>/skill/**/SKILL.md` (BFS, max depth 6,
+//!      dot directories skipped). A `.md` file directly inside those directories is
+//!      also treated as a skill (Bun's depth-0 `.md` rule).
+//!   3. Top-level `skills` in `<config>/devcode.jsonc`: paths (directories, `~/` expanded,
+//!      relative resolved against the run directory, scanned like above) and http(s) URLs
+//!      pulled into `<cache>/skills/<sha1(base)>/` (see remote.rs). The legacy object form
+//!      `{ paths, urls }` is normalized to `[...paths, ...urls]`.
 //!
 //! Frontmatter is a deliberately small YAML subset: `---` fences, top-level
 //! `key: value` pairs (optionally quoted) plus a single nested `metadata:` map
@@ -15,6 +19,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+pub mod remote;
 
 const MAX_DEPTH: usize = 6;
 
@@ -240,17 +246,91 @@ pub fn embedded_skills(app_version: &str) -> Vec<Skill> {
 }
 
 /// Load embedded skills plus everything under `<config>/skills/`.
-pub fn load(config_dir: &Path, app_version: &str) -> Vec<Skill> {
-    let mut skills = embedded_skills(app_version);
-    let root = config_dir.join("skills");
-    for filepath in scan(&root) {
+fn scan_directory(dir: &Path, skills: &mut Vec<Skill>) {
+    for filepath in scan(dir) {
         let Ok(content) = std::fs::read_to_string(&filepath) else {
             continue;
         };
-        if let Some(skill) = parse_skill_file(&root, &filepath, &content) {
-            // file skills win over embedded on id conflict
+        if let Some(skill) = parse_skill_file(dir, &filepath, &content) {
+            // a skill loaded later overrides one with the same id
             skills.retain(|existing| existing.id != skill.id);
             skills.push(skill);
+        }
+    }
+}
+
+/// Configured skill sources from top-level `skills` in `<config>/devcode.jsonc`.
+/// Array form: mixed paths and URLs in order. Legacy object form `{ paths, urls }`
+/// is normalized to `[...paths, ...urls]` (Bun's `normalizeSkills`). URLs (http(s)
+/// only) become remote sources; other entries expand `~/` against the home
+/// directory, resolve relative to `directory`, and are scanned as directories.
+fn configured_sources(config_file: &Path, paths: &devcode_util::Paths, directory: &Path) -> Vec<Source> {
+    let Ok(raw) = std::fs::read_to_string(config_file) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&devcode_util::strip_jsonc(&raw)) else {
+        eprintln!("failed to parse {}", config_file.display());
+        return Vec::new();
+    };
+    let entries: Vec<String> = match value.get("skills") {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        Some(serde_json::Value::Object(object)) => {
+            let mut entries = Vec::new();
+            for key in ["paths", "urls"] {
+                if let Some(serde_json::Value::Array(items)) = object.get(key) {
+                    entries.extend(items.iter().filter_map(serde_json::Value::as_str).map(str::to_owned));
+                }
+            }
+            entries
+        }
+        _ => Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            if !seen.insert(entry.clone()) {
+                return None;
+            }
+            if entry.to_ascii_lowercase().starts_with("http://") || entry.to_ascii_lowercase().starts_with("https://") {
+                return Some(Source::Url(entry));
+            }
+            let expanded = if let Some(rest) = entry.strip_prefix("~/") {
+                paths.home.join(rest)
+            } else if Path::new(&entry).is_absolute() {
+                PathBuf::from(&entry)
+            } else {
+                directory.join(&entry)
+            };
+            Some(Source::Directory(expanded))
+        })
+        .collect()
+}
+
+enum Source {
+    Directory(PathBuf),
+    Url(String),
+}
+
+pub fn load(paths: &devcode_util::Paths, directory: &Path, app_version: &str) -> Vec<Skill> {
+    let mut skills = embedded_skills(app_version);
+    // Bun loads `<dir>/skills` and `<dir>/skill` for every config directory; the Rust
+    // port has a single config directory.
+    for name in ["skills", "skill"] {
+        scan_directory(&paths.config.join(name), &mut skills);
+    }
+    for source in configured_sources(&paths.config.join("devcode.jsonc"), paths, directory) {
+        match source {
+            Source::Directory(dir) => scan_directory(&dir, &mut skills),
+            Source::Url(url) => {
+                for root in remote::pull_cached(&paths.cache, &url) {
+                    scan_directory(&root, &mut skills);
+                }
+            }
         }
     }
     skills
@@ -362,17 +442,29 @@ pub fn available_skills_section(skills: &[Skill]) -> String {
 mod tests {
     use super::*;
 
+    fn test_paths(dir: &Path) -> devcode_util::Paths {
+        devcode_util::Paths {
+            home: dir.join("home"),
+            data: dir.join("data"),
+            cache: dir.join("cache"),
+            config: dir.join("config"),
+            state: dir.join("state"),
+            tmp: dir.join("tmp"),
+        }
+    }
+
     #[test]
     fn frontmatter_parsed_and_id_is_directory_name() {
         let dir = std::env::temp_dir().join(format!("devcode-skills-{}", std::process::id()));
-        let skill_dir = dir.join("skills").join("my-skill");
+        let paths = test_paths(&dir);
+        let skill_dir = paths.config.join("skills").join("my-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: My Skill\ndescription: does things\ndisable-model-invocation: true\nmetadata:\n  devcode/autoinvoke: false\n---\n# Body\n\nDo the thing.\n",
         )
         .unwrap();
-        let skills = load(&dir, "0.1.0-rust");
+        let skills = load(&paths, &dir, "0.1.0-rust");
         let my = skills
             .iter()
             .find(|skill| skill.id == "my-skill")
@@ -390,7 +482,8 @@ mod tests {
     #[test]
     fn model_output_wraps_content_and_lists_files() {
         let dir = std::env::temp_dir().join(format!("devcode-skills-files-{}", std::process::id()));
-        let skill_dir = dir.join("skills").join("thing");
+        let paths = test_paths(&dir);
+        let skill_dir = paths.config.join("skills").join("thing");
         std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -398,7 +491,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(skill_dir.join("scripts").join("run.sh"), "echo hi\n").unwrap();
-        let skills = load(&dir, "0.1.0-rust");
+        let skills = load(&paths, &dir, "0.1.0-rust");
         let thing = skills.iter().find(|skill| skill.id == "thing").unwrap();
         let output = to_model_output(thing);
         assert!(output.starts_with("<skill_content name=\"Thing\">"));

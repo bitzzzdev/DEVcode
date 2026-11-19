@@ -6,4 +6,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+ureq = "2.12"
+sha1 = "0.10"
+url = "2.5"
+devcode-util = { path = "../util" }
+
+[dev-dependencies]
+tiny_http = "0.12"
