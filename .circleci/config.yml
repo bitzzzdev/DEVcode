@@ -95,6 +95,10 @@ jobs:
         type: boolean
         default: false
         description: "Run the produced binary --version (x86_64 rows)"
+      musl_cc:
+        type: boolean
+        default: false
+        description: "Install the aarch64 musl cross toolchain from musl.cc"
     docker:
       - image: cimg/base:stable
     steps:
@@ -117,7 +121,29 @@ jobs:
             - ~/.cargo
       - run:
           name: Install link toolchain
-          command: sudo apt-get update -qq && sudo apt-get install -y -qq << parameters.apt >>
+          command: |
+            if [ -n "<< parameters.apt >>" ]; then
+              sudo apt-get update -qq && sudo apt-get install -y -qq << parameters.apt >>
+            fi
+      - when:
+          condition: << parameters.musl_cc >>
+          steps:
+            - restore_cache:
+                keys:
+                  - musl-cc-arm64-v1
+            - run:
+                name: Install aarch64 musl cross toolchain
+                command: |
+                  if [ ! -x "$HOME/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" ]; then
+                    curl --proto '=https' --tlsv1.2 -fsSL -o "$HOME/aarch64-linux-musl-cross.tgz" https://musl.cc/aarch64-linux-musl-cross.tgz
+                    tar -xzf "$HOME/aarch64-linux-musl-cross.tgz" -C "$HOME"
+                    rm "$HOME/aarch64-linux-musl-cross.tgz"
+                  fi
+                  echo "export PATH=\"$HOME/aarch64-linux-musl-cross/bin:\$PATH\"" >> "$BASH_ENV"
+            - save_cache:
+                key: musl-cc-arm64-v1
+                paths:
+                  - ~/aarch64-linux-musl-cross
       - restore_cache:
           keys:
             - crates-dist-v1-{{ checksum "crates/Cargo.lock" }}-<< parameters.target >>
@@ -193,7 +219,7 @@ workflows:
           triple: x86_64-unknown-linux-musl
           apt: musl-tools
           linker: musl-gcc
-          rustflags: "-C target-cpu=x86-64-v3"
+          rustflags: "-C target-cpu=x86-64-v3 -C target-feature=+crt-static"
           smoke: true
           filters:
             branches:
@@ -204,6 +230,7 @@ workflows:
           triple: x86_64-unknown-linux-musl
           apt: musl-tools
           linker: musl-gcc
+          rustflags: "-C target-feature=+crt-static"
           smoke: true
           filters:
             branches:
@@ -221,8 +248,10 @@ workflows:
           name: DEVcode-rust-linux-arm64-musl
           target: linux-arm64-musl
           triple: aarch64-unknown-linux-musl
-          apt: gcc-aarch64-linux-musl
+          apt: ""
+          musl_cc: true
           linker: aarch64-linux-musl-gcc
+          rustflags: "-C target-feature=+crt-static"
           filters:
             branches:
               only: rust-port
