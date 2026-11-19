@@ -247,6 +247,7 @@ impl Connection {
                     timeout: connect_timeout,
                     needs_oauth: remote.needs_oauth,
                     db_path: db_path.to_path_buf(),
+                    resources_advertised: false,
                 };
                 connection.handshake(connect_timeout)?;
                 Ok(Connection::Http(connection))
@@ -303,6 +304,54 @@ impl Connection {
         Ok(tool_text(&result).unwrap_or_else(|| result.to_string()))
     }
 
+    /// Whether the server advertised a `resources` capability at initialize.
+    /// Servers that do not advertise it yield empty lists / no resource reads,
+    /// mirroring the Bun build's capability gate.
+    pub fn resources_advertised(&self) -> bool {
+        match self {
+            Connection::Stdio(connection) => connection.resources_advertised,
+            Connection::Http(connection) => connection.resources_advertised,
+        }
+    }
+
+    /// List the server's resources (MCP `resources/list`). Raw entries, untagged
+    /// (the catalog aggregator tags them with the server name). Servers without
+    /// a `resources` capability yield an empty list, like the Bun build.
+    pub fn list_resources(&mut self, timeout: Duration) -> Result<Vec<Value>, String> {
+        if !self.resources_advertised() {
+            return Ok(Vec::new());
+        }
+        let result = self.request("resources/list", json!({}), timeout)?;
+        Ok(result
+            .get("resources")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// List the server's resource templates (MCP `resources/templates/list`).
+    /// Servers that declare `resources` but do not implement template listing
+    /// yield an empty list instead of an error (some servers do this).
+    pub fn list_resource_templates(&mut self, timeout: Duration) -> Result<Vec<Value>, String> {
+        if !self.resources_advertised() {
+            return Ok(Vec::new());
+        }
+        match self.request("resources/templates/list", json!({}), timeout) {
+            Ok(result) => Ok(result
+                .get("resourceTemplates")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()),
+            Err(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// Read one resource (MCP `resources/read`). Returns the raw `contents` array.
+    pub fn read_resource(&mut self, uri: &str, timeout: Duration) -> Result<Value, String> {
+        let result = self.request("resources/read", json!({ "uri": uri }), timeout)?;
+        Ok(result.get("contents").cloned().unwrap_or(json!([])))
+    }
+
     fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
         match self {
             Connection::Stdio(stdio) => stdio.request(method, params, timeout),
@@ -340,6 +389,7 @@ pub struct StdioConnection {
     stdin: ChildStdin,
     reader: StdioReader,
     next_id: u64,
+    resources_advertised: bool,
 }
 
 impl StdioConnection {
@@ -388,6 +438,7 @@ impl StdioConnection {
             stdin,
             reader: StdioReader { receiver },
             next_id: 1,
+            resources_advertised: false,
         };
         let timeout = timeout.min(Duration::from_secs(10));
         connection.handshake(timeout)?;
@@ -395,7 +446,7 @@ impl StdioConnection {
     }
 
     fn handshake(&mut self, timeout: Duration) -> Result<(), String> {
-        self.request(
+        let result = self.request(
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
@@ -404,6 +455,11 @@ impl StdioConnection {
             }),
             timeout,
         )?;
+        self.resources_advertised = result
+            .get("capabilities")
+            .and_then(|value| value.get("resources"))
+            .map(|value| value != &Value::Bool(false))
+            .unwrap_or(false);
         self.notify("notifications/initialized", json!({}))
     }
 
@@ -480,11 +536,12 @@ pub struct HttpConnection {
     timeout: Duration,
     needs_oauth: bool,
     db_path: PathBuf,
+    resources_advertised: bool,
 }
 
 impl HttpConnection {
     fn handshake(&mut self, timeout: Duration) -> Result<(), String> {
-        self.request(
+        let result = self.request(
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
@@ -493,6 +550,11 @@ impl HttpConnection {
             }),
             timeout,
         )?;
+        self.resources_advertised = result
+            .get("capabilities")
+            .and_then(|value| value.get("resources"))
+            .map(|value| value != &Value::Bool(false))
+            .unwrap_or(false);
         // fire-and-forget notification
         let _ = self.post(
             json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} }),
@@ -654,6 +716,10 @@ pub struct AgentTool {
 pub struct Runtime {
     pub tools: Vec<AgentTool>,
     connections: Vec<(String, Connection)>,
+    /// Every server name from the loaded config, connected or not. Distinguishes
+    /// "unknown server" (Bun's MCP.NotFoundError) from "configured but not
+    /// currently usable" (Bun's empty catalog / "not connected" ToolFailure).
+    configured: Vec<String>,
 }
 
 impl Runtime {
@@ -663,6 +729,7 @@ impl Runtime {
         let mut runtime = Runtime {
             tools: Vec::new(),
             connections: Vec::new(),
+            configured: servers.keys().cloned().collect(),
         };
         for (name, config) in servers {
             if matches!(config, ServerConfig::Local(local) if local.disabled)
@@ -709,4 +776,109 @@ impl Runtime {
             .find(|(name, _)| *name == server)?;
         Some(connection.call_tool(&tool_name, arguments, timeout))
     }
+
+    /// Aggregate the MCP resource catalog. With `server`, only that server's
+    /// catalog is returned; without, the merged catalog across every connected
+    /// server (failing servers are skipped, like the Bun build's per-server
+    /// fallback to an empty catalog). Errors from a single server propagate
+    /// only in the filtered form, matching Bun's `resources({ server })`.
+    pub fn resource_catalog(&mut self, server: Option<&str>, timeout: Duration) -> Result<Value, String> {
+        match server {
+            Some(name) => match self.connections.iter_mut().find(|(entry, _)| entry.as_str() == name) {
+                Some((name, connection)) => {
+                    let (resources, templates) = catalog_from(connection, name, timeout)?;
+                    Ok(json!({ "resources": resources, "templates": templates }))
+                }
+                None => {
+                    if self.configured.iter().any(|entry| entry == name) {
+                        Ok(json!({ "resources": [], "templates": [] }))
+                    } else {
+                        Err(format!("MCP server not found: {name}"))
+                    }
+                }
+            },
+            None => {
+                let mut resources = Vec::new();
+                let mut templates = Vec::new();
+                for (name, connection) in &mut self.connections {
+                    match catalog_from(connection, name, timeout) {
+                        Ok((server_resources, server_templates)) => {
+                            resources.extend(server_resources);
+                            templates.extend(server_templates);
+                        }
+                        Err(error) => eprintln!("MCP server \"{name}\" resources/list failed: {error}"),
+                    }
+                }
+                Ok(json!({ "resources": resources, "templates": templates }))
+            }
+        }
+    }
+
+    /// Read one MCP resource. Errors carry the exact tool-facing message the
+    /// Bun build produces (the runner surfaces them verbatim).
+    pub fn read_resource(&mut self, server: &str, uri: &str, timeout: Duration) -> Result<Value, String> {
+        match self.connections.iter_mut().find(|(name, _)| name == server) {
+            Some((name, connection)) => {
+                if !connection.resources_advertised() {
+                    return Err(format!(
+                        "MCP server \"{server}\" is not connected or does not expose resources"
+                    ));
+                }
+                let contents = connection
+                    .read_resource(uri, timeout)
+                    .map_err(|error| format!("Unable to read MCP resource {server}:{uri}: {error}"))?;
+                Ok(json!({ "server": name, "uri": uri, "contents": contents }))
+            }
+            None => {
+                if self.configured.iter().any(|entry| entry == server) {
+                    Err(format!(
+                        "MCP server \"{server}\" is not connected or does not expose resources"
+                    ))
+                } else {
+                    Err(format!("MCP server not found: {server}"))
+                }
+            }
+        }
+    }
+}
+
+/// One server's catalog, tagged with the server name (Bun's `toCatalog`).
+fn catalog_from(connection: &mut Connection, server: &str, timeout: Duration) -> Result<(Vec<Value>, Vec<Value>), String> {
+    let resources = connection
+        .list_resources(timeout)?
+        .into_iter()
+        .filter_map(|resource| resource_entry(server, &resource))
+        .collect();
+    let templates = connection
+        .list_resource_templates(timeout)?
+        .into_iter()
+        .filter_map(|template| template_entry(server, &template))
+        .collect();
+    Ok((resources, templates))
+}
+
+fn resource_entry(server: &str, resource: &Value) -> Option<Value> {
+    let uri = resource.get("uri")?.as_str()?.to_owned();
+    let name = resource.get("name")?.as_str()?.to_owned();
+    let mut entry = json!({ "server": server, "name": name, "uri": uri });
+    if let Some(description) = resource.get("description").and_then(Value::as_str) {
+        entry["description"] = json!(description);
+    }
+    if let Some(mime_type) = resource.get("mimeType").and_then(Value::as_str) {
+        entry["mimeType"] = json!(mime_type);
+    }
+    Some(entry)
+}
+
+fn template_entry(server: &str, template: &Value) -> Option<Value> {
+    let uri_template = template.get("uriTemplate")?.as_str()?.to_owned();
+    let name = template.get("name")?.as_str()?.to_owned();
+    let mut entry = json!({ "server": server, "name": name, "uriTemplate": uri_template });
+    if let Some(description) = template.get("description").and_then(Value::as_str) {
+        entry["description"] = json!(description);
+    }
+    if let Some(mime_type) = template.get("mimeType").and_then(Value::as_str) {
+        entry["mimeType"] = json!(mime_type);
+    }
+    Some(entry)
 }

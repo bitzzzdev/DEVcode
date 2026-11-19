@@ -295,7 +295,17 @@ pub fn run_admitted(
     }
 }
 
-const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "glob", "grep", "shell", "skill"];
+const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "shell",
+    "skill",
+    "list_mcp_resources",
+    "read_mcp_resource",
+];
 
 /// Load the user's native plugins for one run. Per-run `dlopen` is negligible; the
 /// alternative (a shared static host) would hold cdylib mappings for the process and
@@ -894,6 +904,28 @@ fn builtin_tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "list_mcp_resources".into(),
+            description: "List documents, records, and other data exposed by MCP servers. Use this when the user refers to something that is not a local file, such as a URI with a custom scheme, then load a match with read_mcp_resource. Each entry names the server to read it from. Templates are resources addressed by a parameter such as a record ID; fill in the uriTemplate placeholders before reading.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "server": { "type": "string", "description": "MCP server name as configured. Omit to list every server." }
+                }
+            }),
+        },
+        ToolSpec {
+            name: "read_mcp_resource".into(),
+            description: "Read one MCP resource by server and URI. Not for local files. Always return the full contents rather than slicing or filtering them; oversized output is truncated automatically and the full content is saved to a file you can read.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "server": { "type": "string", "description": "The server field of the discovered resource." },
+                    "uri": { "type": "string", "description": "Exact resource URI from discovery, an expanded uriTemplate, or the user." }
+                },
+                "required": ["server", "uri"]
+            }),
+        },
+        ToolSpec {
             name: "shell".into(),
             description: "Run a shell command (`sh -c`). Returns combined stdout/stderr. Default timeout 120s.".into(),
             input_schema: json!({
@@ -1150,6 +1182,37 @@ fn execute_tool(
                     .map(devcode_skills::to_model_output)
                     .ok_or_else(|| format!("unable to load skill {id}"))
             }),
+        "list_mcp_resources" => {
+            let server = arguments.get("server").and_then(Value::as_str);
+            mcp.resource_catalog(server, std::time::Duration::from_secs(120))
+                .map(|catalog| catalog.to_string())
+        }
+        "read_mcp_resource" => {
+            let server = arguments
+                .get("server")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "read_mcp_resource requires a server".to_string());
+            let uri = arguments
+                .get("uri")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "read_mcp_resource requires a uri".to_string());
+            server.and_then(|server| {
+                uri.and_then(|uri| {
+                    mcp.read_resource(server, uri, std::time::Duration::from_secs(120))
+                        .map(|content| {
+                            let capped = devcode_tools::cap_output(paths, &content.to_string());
+                            let mut text = capped.text;
+                            if let Some(path) = capped.overflow_path {
+                                text.push_str(&format!(
+                                    "\n(output truncated; the full content was saved to {})",
+                                    path.display()
+                                ));
+                            }
+                            text
+                        })
+                })
+            })
+        }
         other => {
             if let Some(result) = mcp.call(other, &arguments, std::time::Duration::from_secs(120)) {
                 result
@@ -1299,6 +1362,76 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("builtin-wins"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_resource_tools_appear_in_specs_and_route() {
+        let (host, dir) = fixture_plugin_host("mcp-resources");
+        let mut empty_mcp = devcode_mcp::Runtime::connect_all(
+            &std::collections::BTreeMap::new(),
+            std::time::Duration::from_millis(10),
+            std::path::Path::new(":memory:"),
+        );
+        let specs = tool_specs(&host, &empty_mcp);
+        for name in ["list_mcp_resources", "read_mcp_resource"] {
+            assert!(
+                specs.iter().any(|spec| spec.name == name),
+                "{name} missing from builtin tool specs"
+            );
+        }
+        let paths = devcode_util::paths("devcode");
+        let skills: Vec<devcode_skills::Skill> = Vec::new();
+
+        // No configured servers: the catalog is empty, not an error.
+        let call = ToolCall {
+            id: "call_resources_1".into(),
+            name: "list_mcp_resources".into(),
+            arguments: r#"{}"#.into(),
+        };
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp, &skills);
+        assert_eq!(part["state"]["status"], "completed");
+        let output: Value = serde_json::from_str(part["state"]["content"][0]["text"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(output, json!({ "resources": [], "templates": [] }));
+
+        // Unknown server in the filter: Bun's MCP.NotFoundError message, as a tool error part.
+        let call = ToolCall {
+            id: "call_resources_2".into(),
+            name: "list_mcp_resources".into(),
+            arguments: r#"{"server":"unknown"}"#.into(),
+        };
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp, &skills);
+        assert_eq!(part["state"]["status"], "error");
+        assert!(part["state"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("MCP server not found: unknown"));
+
+        // read_mcp_resource requires server and uri.
+        let call = ToolCall {
+            id: "call_resources_3".into(),
+            name: "read_mcp_resource".into(),
+            arguments: r#"{}"#.into(),
+        };
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp, &skills);
+        assert_eq!(part["state"]["status"], "error");
+        assert!(part["state"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires a server"));
+
+        let call = ToolCall {
+            id: "call_resources_4".into(),
+            name: "read_mcp_resource".into(),
+            arguments: r#"{"server":"unknown","uri":"fixture://demo"}"#.into(),
+        };
+        let part = execute_tool(&paths, &call, &dir, "ses_test", &host, &mut empty_mcp, &skills);
+        assert_eq!(part["state"]["status"], "error");
+        assert!(part["state"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("MCP server not found: unknown"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
