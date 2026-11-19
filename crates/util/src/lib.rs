@@ -49,3 +49,11 @@ pub fn paths(app: &str) -> Paths {
         tmp: tmp_root.join(app),
     }
 }
+
+/// Create the directories the Bun build's Global layer creates on startup
+/// (data, cache, config, state, tmp). Best effort; called once by the binary.
+pub fn ensure_dirs(paths: &Paths) {
+    for directory in [&paths.data, &paths.cache, &paths.config, &paths.state, &paths.tmp] {
+        let _ = std::fs::create_dir_all(directory);
+    }
+}

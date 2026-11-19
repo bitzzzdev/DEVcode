@@ -11,6 +11,8 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Bun's Global layer creates these on startup; do the same before dispatch.
+    devcode_util::ensure_dirs(&devcode_util::paths("devcode"));
     match args.first().map(String::as_str) {
         Some("--version") | Some("-v") | Some("version") => {
             println!("{}", devcode_util::VERSION);

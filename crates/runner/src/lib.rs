@@ -350,12 +350,248 @@ fn load_skills(paths: &devcode_util::Paths, plugins: &devcode_plugin::Host) -> V
     skills
 }
 
-/// System prompt for this run: the static head plus the available-skills section.
-fn system_prompt(skills: &[devcode_skills::Skill]) -> String {
-    format!(
+/// System prompt for this run: the static head, the available-skills section,
+/// ambient instructions (AGENTS.md files and configured `instructions`, rendered
+/// the way the Bun build renders the `core/instructions` source), the date, and
+/// the environment block. Order matches the Bun build's instruction combine.
+fn system_prompt(paths: &devcode_util::Paths, skills: &[devcode_skills::Skill], directory: &Path) -> String {
+    let root = git_toplevel(directory);
+    let git_repo = if root.is_some() { "yes" } else { "no" };
+    let root_ref = root.as_deref().unwrap_or(directory);
+    let mut prompt = format!(
         "{SYSTEM_PROMPT}\n\n{}",
         devcode_skills::available_skills_section(skills)
+    );
+    let instructions = load_instructions(paths, directory, root_ref);
+    if !instructions.is_empty() {
+        prompt = format!("{prompt}\n\n{instructions}");
+    }
+    format!(
+        "{prompt}\n\nToday's date: {}\n\nHere is some useful information about the environment you are running in:\n<env>\n  Working directory: {}\n  Workspace root folder: {}\n  Is directory a git repo: {git_repo}\n  Platform: {}\n  Prefer {} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.\n</env>",
+        date_string(),
+        directory.display(),
+        root_ref.display(),
+        std::env::consts::OS,
+        paths.tmp.display(),
     )
+}
+
+const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `Date.prototype.toDateString()` (e.g. "Thu Nov 19 2026") for the builtin `core/date`.
+fn date_string() -> String {
+    let days = now_millis().div_euclid(86_400_000);
+    let (year, month, day) = civil_from_days(days);
+    // 1970-01-01 (day 0) was a Thursday; index WEEKDAYS with Sunday = 0.
+    let weekday = ((days + 4) % 7 + 7) % 7;
+    format!("{} {} {:02} {}", WEEKDAYS[weekday as usize], MONTHS[(month - 1) as usize], day, year)
+}
+
+// Howard Hinnant's civil_from_days algorithm. Input: days since 1970-01-01.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Ambient instructions rendered as the Bun build's `core/instructions` source:
+/// `Instructions from: <path>\n<content>` sections joined by `\n\n`.
+///
+/// Sources, in order: the global `<config>/AGENTS.md`, the AGENTS.md ancestor walk
+/// from `start` to the stop bound (nearest first; stop is `start`'s git toplevel, or
+/// $HOME when `start` is under $HOME), then configured `instructions` from
+/// `<config>/devcode.jsonc` (URLs fetched with a 5 s timeout; `~/`, absolute file
+/// paths, absolute globs and relative patterns globbed upward to the git root).
+///
+/// Deviations from the Bun build (documented in the changelog): a file that fails to
+/// read is skipped with a stderr note instead of poisoning the whole instruction set,
+/// remote fetch failures are skipped (no last-good cache), and Rust glob does not
+/// match dotfiles with `*` (no `dot: true` equivalent).
+fn load_instructions(paths: &devcode_util::Paths, start: &Path, root: &Path) -> String {
+    let global = paths.config.join("AGENTS.md");
+    let mut files: Vec<(String, String)> = Vec::new();
+    if let Some(content) = read_instruction(&global) {
+        files.push((global.display().to_string(), content));
+    }
+
+    let stop = if contains_dir(&paths.home, start) {
+        paths.home.clone()
+    } else {
+        root.to_path_buf()
+    };
+    let mut seen = std::collections::HashSet::new();
+    for directory in ancestors(start, &stop) {
+        let candidate = directory.join("AGENTS.md");
+        if !seen.insert(candidate.clone()) {
+            continue;
+        }
+        if let Some(content) = read_instruction(&candidate) {
+            files.push((candidate.display().to_string(), content));
+        }
+    }
+
+    files.extend(configured_instructions(paths, start, root));
+    files
+        .iter()
+        .map(|(path, content)| format!("Instructions from: {path}\n{content}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn read_instruction(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            eprintln!("skipping instruction file {}: {error}", path.display());
+            None
+        }
+    }
+}
+
+/// Ancestor directories from `start` to `stop` inclusive, nearest first.
+fn ancestors(start: &Path, stop: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut current = start.to_path_buf();
+    loop {
+        out.push(current.clone());
+        if current == stop {
+            break;
+        }
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => break,
+        }
+    }
+    out
+}
+
+/// Lexical containment: `candidate` is `ancestor` or sits underneath it.
+fn contains_dir(ancestor: &Path, candidate: &Path) -> bool {
+    candidate.starts_with(ancestor)
+}
+
+/// `git rev-parse --show-toplevel` from `start`; None for non-git directories.
+fn git_toplevel(start: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(start)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!toplevel.is_empty()).then(|| PathBuf::from(toplevel))
+}
+
+/// Configured `instructions` from top-level `instructions` in `<config>/devcode.jsonc`.
+/// URLs are fetched with a 5 s timeout; a failed fetch is skipped (no last-good
+/// cache, unlike the Bun build). `~/` expands to $HOME; an absolute path whose
+/// parent exists scans that one basename; an absolute path without an existing
+/// parent and relative patterns are globbed.
+fn configured_instructions(paths: &devcode_util::Paths, start: &Path, root: &Path) -> Vec<(String, String)> {
+    let sources = load_configured_sources(&paths.config.join("devcode.jsonc"));
+    if sources.is_empty() {
+        return Vec::new();
+    }
+    let mut watched = std::collections::HashSet::new();
+    let mut files = Vec::new();
+    for source in &sources {
+        if source.starts_with("http://") || source.starts_with("https://") {
+            match fetch_instruction(source) {
+                Ok(content) => files.push((source.clone(), content)),
+                Err(error) => eprintln!("skipping instruction url {source}: {error}"),
+            }
+            continue;
+        }
+        let expanded = source
+            .strip_prefix("~/")
+            .map(|rest| paths.home.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|| source.clone());
+        for candidate in configured_matches(&expanded, start, root) {
+            let Ok(resolved) = std::path::absolute(&candidate).map_err(|e| e.to_string()) else {
+                continue;
+            };
+            if !watched.insert(resolved.clone()) {
+                continue;
+            }
+            if let Some(content) = read_instruction(&resolved) {
+                files.push((resolved.display().to_string(), content));
+            }
+        }
+    }
+    files
+}
+
+fn load_configured_sources(config_file: &Path) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(config_file) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&devcode_mcp::strip_jsonc(&raw)) else {
+        eprintln!("failed to parse {}", config_file.display());
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    value
+        .get("instructions")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|source| seen.insert((*source).to_owned()))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn configured_matches(expanded: &str, start: &Path, root: &Path) -> Vec<String> {
+    let path = Path::new(expanded);
+    if path.is_absolute() {
+        let directory = path.parent().unwrap_or(Path::new("/"));
+        if directory.is_dir() {
+            // Literal parent exists: scan the basename as a glob inside it.
+            let pattern = format!("{}/{}", directory.display(), path.file_name().unwrap_or_default().to_string_lossy());
+            return sorted_glob(&pattern);
+        }
+        // No literal parent: treat the whole source as an absolute glob.
+        return sorted_glob(&expanded.replace(std::path::MAIN_SEPARATOR, "/"));
+    }
+    // Relative patterns search upward from the location to the project root.
+    let mut out = Vec::new();
+    for directory in ancestors(start, root) {
+        out.extend(sorted_glob(&format!("{}/{expanded}", directory.display())));
+    }
+    out
+}
+
+fn sorted_glob(pattern: &str) -> Vec<String> {
+    let mut matches: Vec<String> = glob::glob(pattern)
+        .map(|paths| paths.flatten().map(|path| path.display().to_string()).collect())
+        .unwrap_or_default();
+    matches.sort();
+    matches
+}
+
+fn fetch_instruction(url: &str) -> Result<String, String> {
+    let response = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .get(url)
+        .call()
+        .map_err(|error| error.to_string())?;
+    response.into_string().map_err(|error| error.to_string())
 }
 
 pub fn load_plugin_host(paths: &devcode_util::Paths) -> devcode_plugin::Host {
@@ -387,7 +623,7 @@ fn step_loop(
     mcp: &mut devcode_mcp::Runtime,
 ) -> Result<(), String> {
     let skills = load_skills(paths, plugins);
-    let system = system_prompt(&skills);
+    let system = system_prompt(paths, &skills, directory);
     let model_json = model_json(model);
     let tools = tool_specs(plugins, mcp);
     let mut exhausted = true;
@@ -1127,5 +1363,158 @@ mod tests {
             }
             other => panic!("expected assistant, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+
+    fn test_paths(root: &Path) -> devcode_util::Paths {
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        devcode_util::Paths {
+            home: root.join("home"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+            config: root.join("config"),
+            state: root.join("state"),
+            tmp: root.join("tmp"),
+        }
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("devcode-runner-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn instructions_walk_nearest_first_with_global() {
+        let root = scratch("inst-walk");
+        let paths = test_paths(&root);
+        let sub = paths.home.join("repo").join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(paths.config.join("AGENTS.md"), "global instructions").unwrap();
+        std::fs::write(paths.home.join("repo").join("AGENTS.md"), "repo instructions").unwrap();
+        std::fs::write(sub.join("AGENTS.md"), "sub instructions").unwrap();
+        let rendered = load_instructions(&paths, &sub, &sub);
+        let global = rendered.find("global instructions").expect("global file missing");
+        let sub_pos = rendered.find("sub instructions").expect("sub file missing");
+        let repo = rendered.find("repo instructions").expect("repo file missing");
+        assert!(global < sub_pos, "global must render before project files");
+        assert!(sub_pos < repo, "nearest directory must render first");
+        assert!(rendered.contains(&format!("Instructions from: {}", sub.join("AGENTS.md").display())));
+    }
+
+    #[test]
+    fn instructions_configured_file_entries() {
+        let root = scratch("inst-configured");
+        let paths = test_paths(&root);
+        let sub = paths.home.join("work");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("extra.md"), "extra doc").unwrap();
+        std::fs::write(paths.home.join("from-home.md"), "home doc").unwrap();
+        std::fs::write(
+            paths.config.join("devcode.jsonc"),
+            r#"{
+  // both a relative glob and a home-relative entry
+  "instructions": ["extra.md", "~/from-home.md"]
+}"#,
+        )
+        .unwrap();
+        let rendered = load_instructions(&paths, &sub, &sub);
+        assert!(rendered.contains("extra doc"), "relative pattern missing: {rendered}");
+        assert!(rendered.contains("home doc"), "~/ entry missing: {rendered}");
+        assert!(rendered.contains("Instructions from:"), "render must carry paths");
+    }
+
+    #[test]
+    fn instructions_configured_url_entry() {
+        let root = scratch("inst-url");
+        let paths = test_paths(&root);
+        let sub = paths.home.join("work");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = "remote instructions";
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        std::fs::write(
+            paths.config.join("devcode.jsonc"),
+            format!(r#"{{ "instructions": ["http://{address}/instructions.md"] }}"#),
+        )
+        .unwrap();
+        let rendered = load_instructions(&paths, &sub, &sub);
+        assert!(
+            rendered.contains(&format!("Instructions from: http://{address}/instructions.md")),
+            "url source must render as its path: {rendered}"
+        );
+        assert!(rendered.contains("remote instructions"), "url content missing: {rendered}");
+    }
+
+    #[test]
+    fn instructions_git_toplevel_bounds_the_walk() {
+        let root = scratch("inst-git");
+        let paths = test_paths(&root);
+        let repo = root.join("checkout");
+        let nested = repo.join("packages").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        // A bound outside any repo (git init must succeed or this test is skipped).
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status();
+        if !init.map(|status| status.success()).unwrap_or(false) {
+            eprintln!("git unavailable; skipping");
+            return;
+        }
+        // Start is NOT under home here, so the walk bound is the git toplevel.
+        std::fs::write(repo.join("AGENTS.md"), "repo-root instructions").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "outside-repo instructions").unwrap();
+        let root_path = git_toplevel(&nested);
+        assert_eq!(root_path.as_deref(), Some(repo.as_path()));
+        let rendered = load_instructions(&paths, &nested, root_path.as_deref().unwrap_or(&nested));
+        assert!(rendered.contains("repo-root instructions"), "repo root must be in the walk: {rendered}");
+        assert!(!rendered.contains("outside-repo instructions"), "walk must stop at the git toplevel: {rendered}");
+    }
+
+    #[test]
+    fn date_string_matches_todatestring_shape() {
+        let date = date_string();
+        let bytes = date.as_bytes();
+        assert_eq!(bytes.len(), 15, "expected e.g. 'Thu Nov 19 2026': {date}");
+        assert_eq!(bytes[3], b' ');
+        assert_eq!(bytes[7], b' ');
+        assert_eq!(bytes[10], b' ');
+    }
+
+    #[test]
+    fn system_prompt_carries_builtins_and_instructions() {
+        let root = scratch("inst-prompt");
+        let paths = test_paths(&root);
+        let sub = paths.home.join("repo");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(paths.config.join("AGENTS.md"), "prompt-level instructions").unwrap();
+        let skills = vec![];
+        let prompt = system_prompt(&paths, &skills, &sub);
+        assert!(prompt.contains("prompt-level instructions"), "instructions missing from system prompt");
+        assert!(prompt.contains("Instructions from:"), "render shape missing");
+        assert!(prompt.contains("Today's date:"), "date builtin missing");
+        assert!(prompt.contains("<env>"), "environment builtin missing");
+        assert!(prompt.contains(&format!("Working directory: {}", sub.display())));
+        assert!(prompt.contains("Is directory a git repo: no"));
     }
 }
