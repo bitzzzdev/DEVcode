@@ -102,7 +102,11 @@ jobs:
       musl_cc:
         type: boolean
         default: false
-        description: "Install the aarch64 musl cross toolchain from musl.cc"
+        description: "Install the musl cross toolchain from musl.cc"
+      musl_arch:
+        type: string
+        default: "x86_64"
+        description: "musl.cc cross toolchain arch (x86_64 or aarch64)"
     docker:
       - image: cimg/base:stable
     steps:
@@ -134,20 +138,20 @@ jobs:
           steps:
             - restore_cache:
                 keys:
-                  - musl-cc-arm64-v1
+                  - musl-cc-<< parameters.musl_arch >>-v1
             - run:
-                name: Install aarch64 musl cross toolchain
+                name: Install musl.cc << parameters.musl_arch >> cross toolchain
                 command: |
-                  if [ ! -x "$HOME/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" ]; then
-                    curl --proto '=https' --tlsv1.2 -fsSL -o "$HOME/aarch64-linux-musl-cross.tgz" https://musl.cc/aarch64-linux-musl-cross.tgz
-                    tar -xzf "$HOME/aarch64-linux-musl-cross.tgz" -C "$HOME"
-                    rm "$HOME/aarch64-linux-musl-cross.tgz"
+                  if [ ! -x "$HOME/<< parameters.musl_arch >>-linux-musl-cross/bin/<< parameters.musl_arch >>-linux-musl-gcc" ]; then
+                    curl --proto '=https' --tlsv1.2 -fsSL -o "$HOME/<< parameters.musl_arch >>-linux-musl-cross.tgz" "https://musl.cc/<< parameters.musl_arch >>-linux-musl-cross.tgz"
+                    tar -xzf "$HOME/<< parameters.musl_arch >>-linux-musl-cross.tgz" -C "$HOME"
+                    rm "$HOME/<< parameters.musl_arch >>-linux-musl-cross.tgz"
                   fi
-                  echo "export PATH=\"$HOME/aarch64-linux-musl-cross/bin:\$PATH\"" >> "$BASH_ENV"
+                  echo "export PATH=\"$HOME/<< parameters.musl_arch >>-linux-musl-cross/bin:\$PATH\"" >> "$BASH_ENV"
             - save_cache:
-                key: musl-cc-arm64-v1
+                key: musl-cc-<< parameters.musl_arch >>-v1
                 paths:
-                  - ~/aarch64-linux-musl-cross
+                  - ~/<< parameters.musl_arch >>-linux-musl-cross
       - restore_cache:
           keys:
             - crates-dist-v1-{{ checksum "crates/Cargo.lock" }}-<< parameters.target >>
@@ -221,8 +225,10 @@ workflows:
           name: DEVcode-rust-linux-x64-musl
           target: linux-x64-musl
           triple: x86_64-unknown-linux-musl
-          apt: musl-tools
-          linker: musl-gcc
+          apt: ""
+          musl_cc: true
+          musl_arch: x86_64
+          linker: x86_64-linux-musl-gcc
           rustflags: "-C target-cpu=x86-64-v3 -C target-feature=+crt-static"
           smoke: true
           filters:
@@ -232,8 +238,10 @@ workflows:
           name: DEVcode-rust-linux-x64-baseline-musl
           target: linux-x64-baseline-musl
           triple: x86_64-unknown-linux-musl
-          apt: musl-tools
-          linker: musl-gcc
+          apt: ""
+          musl_cc: true
+          musl_arch: x86_64
+          linker: x86_64-linux-musl-gcc
           rustflags: "-C target-feature=+crt-static"
           smoke: true
           filters:
@@ -254,6 +262,7 @@ workflows:
           triple: aarch64-unknown-linux-musl
           apt: ""
           musl_cc: true
+          musl_arch: aarch64
           linker: aarch64-linux-musl-gcc
           rustflags: "-C target-feature=+crt-static"
           filters:
