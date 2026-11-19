@@ -9,3 +9,13 @@ version = "0.1.0-rust"
 edition = "2021"
 license = "SEE LICENSE IN LICENSE"
 publish = false
+
+# Release profile for the shipped binary. Deliberately NOT panic = "abort":
+# it changes nothing for plugins (entry points are `extern "C"` and an
+# unwind across that boundary aborts anyway) and there is no reason to
+# also give up unwinding in the host itself.
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+strip = "symbols"

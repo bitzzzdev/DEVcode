@@ -179,7 +179,9 @@ impl Host {
         let library_path = dir.join(&manifest.library);
         let library = libloading::Library::new(&library_path)
             .map_err(|error| format!("failed to load {}: {error}", library_path.display()))?;
-        let entry: libloading::Symbol<unsafe fn() -> *mut dyn Plugin> =
+        // Must match the plugins' `pub extern "C" fn devcode_create_plugin`;
+        // a Rust-ABI `unsafe fn` here would be an ABI mismatch on paper.
+        let entry: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn Plugin> =
             library.get(b"devcode_create_plugin").map_err(|error| {
                 format!(
                     "{} does not export devcode_create_plugin: {error}",

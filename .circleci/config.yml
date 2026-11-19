@@ -67,16 +67,88 @@ jobs:
       - run:
           name: Rust unit tests
           command: cd crates && cargo test --locked
-      - run:
-          name: Build rust DEVcode
-          command: cd crates && cargo build --release --locked
       - save_cache:
           key: crates-target-v1-{{ checksum "crates/Cargo.lock" }}
           paths:
             - crates/target
+
+  rust-dist:
+    parameters:
+      target:
+        type: string
+        description: "Artifact suffix, e.g. linux-x64 (matches the JS build's names)"
+      triple:
+        type: string
+        description: "Rust target triple"
+      apt:
+        type: string
+        description: "Space-separated apt packages providing the link toolchain"
+      linker:
+        type: string
+        default: ""
+        description: "Cross gcc to point CARGO_TARGET_<TRIPLE>_LINKER at (empty: platform default)"
+      rustflags:
+        type: string
+        default: ""
+        description: "RUSTFLAGS for the build (empty for default tuning)"
+      smoke:
+        type: boolean
+        default: false
+        description: "Run the produced binary --version (x86_64 rows)"
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - rust-toolchain-v1
+      - run:
+          name: Ensure Rust 1.99.1 toolchain + target
+          command: |
+            if ! command -v rustc >/dev/null; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.99.1 --profile minimal
+            fi
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+            "$HOME/.cargo/bin/rustup" target add "<< parameters.triple >>"
+      - save_cache:
+          key: rust-toolchain-v1
+          paths:
+            - ~/.rustup
+            - ~/.cargo
+      - run:
+          name: Install link toolchain
+          command: sudo apt-get update -qq && sudo apt-get install -y -qq << parameters.apt >>
+      - restore_cache:
+          keys:
+            - crates-dist-v1-{{ checksum "crates/Cargo.lock" }}-<< parameters.target >>
+      - run:
+          name: Build rust DEVcode (<< parameters.target >>)
+          command: |
+            if [ -n "<< parameters.linker >>" ]; then
+              triple_env=$(printf '%s' "<< parameters.triple >>" | tr 'a-z-' 'A-Z_')
+              export "CARGO_TARGET_${triple_env}_LINKER=<< parameters.linker >>"
+            fi
+            if [ -n "<< parameters.rustflags >>" ]; then
+              export RUSTFLAGS="<< parameters.rustflags >>"
+            fi
+            cd crates
+            cargo build --release --locked --target "<< parameters.triple >>"
+      - save_cache:
+          key: crates-dist-v1-{{ checksum "crates/Cargo.lock" }}-<< parameters.target >>
+          paths:
+            - crates/target
+      - run:
+          name: Verify binary (<< parameters.target >>)
+          command: |
+            binary=crates/target/<< parameters.triple >>/release/DEVcode
+            test -x "$binary"
+            ls -lh "$binary"
+            if [ "<< parameters.smoke >>" = "true" ]; then
+              "$binary" --version
+            fi
       - store_artifacts:
-          path: crates/target/release/DEVcode
-          destination: DEVcode-rust-linux-x64
+          path: crates/target/<< parameters.triple >>/release/DEVcode
+          destination: DEVcode-rust-<< parameters.target >>
 
 workflows:
   build:
@@ -93,6 +165,64 @@ workflows:
                 - linux-arm64
                 - linux-arm64-musl
       - rust-check:
+          filters:
+            branches:
+              only: rust-port
+      - rust-dist:
+          name: DEVcode-rust-linux-x64
+          target: linux-x64
+          triple: x86_64-unknown-linux-gnu
+          apt: build-essential
+          rustflags: "-C target-cpu=x86-64-v3"
+          smoke: true
+          filters:
+            branches:
+              only: rust-port
+      - rust-dist:
+          name: DEVcode-rust-linux-x64-baseline
+          target: linux-x64-baseline
+          triple: x86_64-unknown-linux-gnu
+          apt: build-essential
+          smoke: true
+          filters:
+            branches:
+              only: rust-port
+      - rust-dist:
+          name: DEVcode-rust-linux-x64-musl
+          target: linux-x64-musl
+          triple: x86_64-unknown-linux-musl
+          apt: musl-tools
+          linker: musl-gcc
+          rustflags: "-C target-cpu=x86-64-v3"
+          smoke: true
+          filters:
+            branches:
+              only: rust-port
+      - rust-dist:
+          name: DEVcode-rust-linux-x64-baseline-musl
+          target: linux-x64-baseline-musl
+          triple: x86_64-unknown-linux-musl
+          apt: musl-tools
+          linker: musl-gcc
+          smoke: true
+          filters:
+            branches:
+              only: rust-port
+      - rust-dist:
+          name: DEVcode-rust-linux-arm64
+          target: linux-arm64
+          triple: aarch64-unknown-linux-gnu
+          apt: gcc-aarch64-linux-gnu
+          linker: aarch64-linux-gnu-gcc
+          filters:
+            branches:
+              only: rust-port
+      - rust-dist:
+          name: DEVcode-rust-linux-arm64-musl
+          target: linux-arm64-musl
+          triple: aarch64-unknown-linux-musl
+          apt: gcc-aarch64-linux-musl
+          linker: aarch64-linux-musl-gcc
           filters:
             branches:
               only: rust-port
