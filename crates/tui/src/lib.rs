@@ -427,7 +427,7 @@ pub fn mcp_rows(body: &Value) -> Vec<McpRow> {
 
 fn mcp_status_label(status: &str) -> &'static str {
     match status {
-        "connected" => "Connected ✓",
+        "connected" => "Connected",
         "pending" => "Connecting…",
         "failed" => "Failed !",
         "disabled" => "Disabled ○",
@@ -1370,7 +1370,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("❯ ");
+        .highlight_symbol(">");
     frame.render_stateful_widget(sidebar, main[0], &mut list_state);
 
     // Home screen: centered logo + composer when there is no session to show
