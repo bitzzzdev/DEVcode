@@ -61,6 +61,10 @@ pub struct PromptsDialog {
     pub selected: usize,
 }
 
+/// The /help overlay (Bun: `DialogHelp`): points at the command palette for the
+/// full action list.
+pub struct HelpDialog;
+
 /// Client connection lifecycle, mirrored from the JS TUI client connection
 /// (`connecting` -> `connected`, and on stream loss `reconnecting`, escalating to
 /// `disconnected` once retries pass the devtools threshold).
@@ -306,6 +310,7 @@ pub struct App {
     status_err: bool,
     mcp: Option<McpDialog>,
     prompts: Option<PromptsDialog>,
+    help: Option<HelpDialog>,
     // merged prompt catalog cache for the `/server:name args` submit path;
     // populated on /prompts open, or lazily on first candidate submit
     mcp_prompt_cache: Option<Vec<McpPromptEntry>>,
@@ -359,6 +364,7 @@ pub fn run() -> ExitCode {
         status_err: false,
         mcp: None,
         prompts: None,
+        help: None,
         mcp_prompt_cache: None,
         seen_len: usize::MAX,
         last_sessions_refresh: Instant::now() - Duration::from_secs(60),
@@ -1250,6 +1256,11 @@ impl App {
                 self.open_session_list();
                 return;
             }
+            "help" => {
+                self.input.clear();
+                self.open_help();
+                return;
+            }
             "theme" | "themes" => {
                 if argument.is_empty() {
                     let current = self.theme_name.clone();
@@ -1365,6 +1376,14 @@ impl App {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned())
+    }
+
+    fn open_help(&mut self) {
+        self.help = Some(HelpDialog);
+    }
+
+    fn close_help(&mut self) {
+        self.help = None;
     }
 
     fn open_prompts(&mut self) {
@@ -1571,7 +1590,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_stateful_widget(sidebar, main[0], &mut list_state);
 
     // Home screen: centered logo + composer when there is no session to show
-    if app.mcp.is_none() && app.prompts.is_none() && app.sessions.is_empty() {
+    if app.mcp.is_none() && app.prompts.is_none() && app.help.is_none() && app.sessions.is_empty() {
         let logo = [
             "                   ",
             "█▀▀█ █▀▀█ █▀▀█ █▀▀▄",
@@ -1765,6 +1784,9 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if app.prompts.is_some() {
         draw_prompts(frame, app);
     }
+    if app.help.is_some() {
+        draw_help(frame, app);
+    }
     draw_reconnecting(frame, app);
 }
 
@@ -1814,6 +1836,48 @@ fn draw_reconnecting(frame: &mut Frame<'_>, app: &App) {
             height: rect.height.saturating_sub(2).max(1),
         },
     );
+}
+
+/// The /help overlay (Bun: `DialogHelp`): a centered modal that points at the
+/// command palette for the full action list. Enter or Esc closes it.
+fn draw_help(frame: &mut Frame<'_>, app: &App) {
+    if app.help.is_none() {
+        return;
+    }
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).clamp(36, 76);
+    let height = area.height.saturating_sub(4).clamp(8, 20);
+    let rect = ratatui::layout::Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Help "))
+        .border_style(
+            Style::default()
+                .fg(app.theme.background_element)
+                .bg(app.theme.background),
+        )
+        .style(Style::default().bg(app.theme.background));
+    let content = vec![
+        Line::from(Span::styled(
+            "Press ctrl+p to see all available actions and commands in any context.".to_owned(),
+            Style::default().fg(app.theme.muted),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "esc/enter close".to_owned(),
+            Style::default().fg(app.theme.muted),
+        )),
+    ];
+    let paragraph = Paragraph::new(content)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, rect);
 }
 
 fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
@@ -1889,6 +1953,21 @@ fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("");
     frame.render_stateful_widget(list, rect, &mut list_state);
+}
+
+fn handle_help_key(app: &mut App, code: crossterm::event::KeyCode) {
+    use crossterm::event::KeyCode;
+    match code {
+        KeyCode::Esc | KeyCode::Enter => app.close_help(),
+        KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::Backspace => {}
+        _ => {}
+    }
 }
 
 fn handle_prompts_key(app: &mut App, code: crossterm::event::KeyCode) {
@@ -2127,6 +2206,10 @@ fn event_loop(app: &mut App, stdout: &mut Stdout) -> Result<(), Box<dyn std::err
                     if quit {
                         return Ok(());
                     }
+                    if app.help.is_some() {
+                        handle_help_key(app, key.code);
+                        continue;
+                    }
                     if app.prompts.is_some() {
                         handle_prompts_key(app, key.code);
                         continue;
@@ -2320,6 +2403,54 @@ mod tests {
     }
 
     #[test]
+    fn help_dialog_renders_command_palette_hint() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
+            sessions: vec![],
+            selected: 0,
+            transcript: vec![],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: None,
+            help: Some(HelpDialog),
+            mcp_prompt_cache: None,
+            seen_len: 0,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            spinner_frame: 0,
+            sse_rx: None,
+            conn_status: ConnStatus::Connected,
+            conn_attempt: 0,
+            conn_error: None,
+            conn_since: Instant::now(),
+            managed: false,
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text = render_to_text(&mut terminal);
+        assert!(text.contains("Help"), "dialog title missing: {text}");
+        assert!(
+            text.contains("Press ctrl+p to see all available actions and commands in any context."),
+            "command palette hint missing: {text}"
+        );
+        assert!(
+            text.contains("esc/enter close"),
+            "close hint missing: {text}"
+        );
+    }
+
+    #[test]
     fn renders_shell() {
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2343,6 +2474,7 @@ mod tests {
             status_err: false,
             mcp: None,
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
@@ -2394,6 +2526,7 @@ mod tests {
             status_err: false,
             mcp: None,
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
@@ -2453,6 +2586,7 @@ mod tests {
             status_err: false,
             mcp: None,
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 3,
             last_sessions_refresh: Instant::now(),
@@ -2496,6 +2630,7 @@ mod tests {
         assert_eq!(parse_command("/quit"), ("quit", ""));
         assert_eq!(parse_command("/mcps"), ("mcps", ""));
         assert_eq!(parse_command("/prompts"), ("prompts", ""));
+        assert_eq!(parse_command("/help"), ("help", ""));
         assert_eq!(
             parse_command("/fixture:greet a b"),
             ("fixture:greet", "a b")
@@ -2591,6 +2726,7 @@ mod tests {
                 }],
                 selected: 0,
             }),
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 0,
             last_sessions_refresh: Instant::now(),
@@ -2678,6 +2814,7 @@ mod tests {
                 error: None,
             }),
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 1,
             last_sessions_refresh: Instant::now(),
@@ -2766,6 +2903,7 @@ mod tests {
             status_err: false,
             mcp: None,
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 0,
             last_sessions_refresh: Instant::now(),
@@ -2816,6 +2954,7 @@ mod tests {
             status_err: false,
             mcp: None,
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 0,
             last_sessions_refresh: Instant::now(),
@@ -2861,6 +3000,7 @@ mod tests {
             status_err: false,
             mcp: None,
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 0,
             last_sessions_refresh: Instant::now(),
@@ -2906,6 +3046,7 @@ mod tests {
             status_err: false,
             mcp: None,
             prompts: None,
+            help: None,
             mcp_prompt_cache: None,
             seen_len: 0,
             last_sessions_refresh: Instant::now(),
