@@ -2,6 +2,15 @@
 version: 2.1
 
 jobs:
+  validate:
+    docker:
+      - image: circleci/cli:cli
+    steps:
+      - checkout
+      - run:
+          name: Validate CircleCI config with the CircleCI CLI
+          command: circleci config validate
+
   build:
     parameters:
       target:
@@ -41,8 +50,27 @@ jobs:
 workflows:
   build:
     jobs:
+      - validate
       - build:
+          requires:
+            - validate
           name: DEVcode-<< matrix.target >>
+          matrix:
+            parameters:
+              target:
+                - linux-x64
+                - linux-x64-baseline
+                - linux-x64-musl
+                - linux-x64-baseline-musl
+                - linux-arm64
+                - linux-arm64-musl
+
+  release:
+    jobs:
+      - validate
+      - build:
+          requires:
+            - validate
           matrix:
             parameters:
               target:
