@@ -1123,6 +1123,14 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         frame.render_widget(tab_list, root[0]);
     }
 
+    // startup overlay: shows while there are no sessions yet, like the JS
+    // StartupLoading component (plugins.ready -> "Finishing startup…").
+    if app.sessions.is_empty() {
+        let overlay = Paragraph::new(" Loading sessions… ")
+            .style(Style::default().fg(app.theme.muted).bg(app.theme.background));
+        frame.render_widget(overlay, main[0]);
+    }
+
     let items: Vec<ListItem> = app
         .sessions
         .iter()
@@ -1231,10 +1239,21 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .scroll((app.scroll, 0));
     frame.render_widget(transcript, right[0]);
 
-    // input
-    let input = Paragraph::new(format!("> {}", app.input))
-        .block(Block::default().borders(Borders::TOP).title(" message "))
-        .style(Style::default().fg(app.theme.foreground).bg(app.theme.background));
+    // input area: JS-style composer with a bordered block and prompt prefix
+    let prompt = Span::styled("> ", Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD));
+    let input_text = Span::styled(app.input.clone(), Style::default().fg(app.theme.foreground));
+    let input_line = Line::from(vec![prompt, input_text]);
+    let input_block = Block::default()
+        .borders(Borders::TOP)
+        .title(Line::from(Span::styled(
+            " message ",
+            Style::default().fg(app.theme.muted),
+        )))
+        .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+        .style(Style::default().bg(app.theme.background));
+    let input = Paragraph::new(input_line)
+        .block(input_block)
+        .style(Style::default().bg(app.theme.background));
     frame.render_widget(input, right[1]);
     let cursor_x = right[1].x + 2 + app.input.chars().count() as u16 + 1;
     frame.set_cursor_position((
@@ -1242,20 +1261,26 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         right[1].y + 1,
     ));
 
-    // status bar
+    // footer: model + status + keybind hints, like the JS TUI footer row
     let model = app
         .model
         .as_deref()
         .unwrap_or("model unset (/model provider/model)");
-    let help = " ↑↓ sessions · Enter send · /new /mcps /prompts · PgUp/PgDn scroll · Ctrl-C quit";
-    let status_line = if app.status.is_empty() {
-        format!(" {model}{help}")
+    let status = if app.status.is_empty() {
+        String::new()
     } else {
-        format!(" {} | {model}{help}", app.status)
+        format!(" {} ", app.status)
+    };
+    let help = " ↑↓ sessions · Enter send · /new /mcps /prompts · PgUp/PgDn scroll · Ctrl-C quit";
+    let footer_line = format!("{status}{model}{help}");
+    let footer_fg = if app.status_err {
+        app.theme.error
+    } else {
+        app.theme.muted
     };
     frame.render_widget(
-        Paragraph::new(status_line)
-            .style(Style::default().fg(if app.status_err { app.theme.error } else { app.theme.status }).bg(app.theme.background)),
+        Paragraph::new(footer_line)
+            .style(Style::default().fg(footer_fg).bg(app.theme.background)),
         root[1],
     );
 
