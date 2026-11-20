@@ -103,9 +103,90 @@ impl Default for Theme {
     }
 }
 
+impl Theme {
+    /// Named dark themes ported from the JS TUI assets. Returns None when the
+    /// name is unknown, so callers can fall back to the default devcode palette.
+    pub fn named(name: &str) -> Option<Theme> {
+        let rgb = |r: u8, g: u8, b: u8| Color::Rgb(r, g, b);
+        let theme = match name {
+            "devcode" => return Some(Theme::default()),
+            "dracula" => Theme {
+                background: rgb(40, 42, 54),
+                background_panel: rgb(50, 52, 66),
+                background_element: rgb(68, 71, 90),
+                foreground: rgb(248, 248, 242),
+                muted: rgb(98, 114, 164),
+                accent: rgb(139, 233, 253),
+                user: rgb(189, 147, 249),
+                assistant: rgb(248, 248, 242),
+                tool: rgb(98, 114, 164),
+                status: rgb(98, 114, 164),
+                error: rgb(255, 85, 85),
+                warning: rgb(241, 250, 140),
+                success: rgb(80, 250, 123),
+                info: rgb(255, 184, 108),
+            },
+            "catppuccin" => Theme {
+                background: rgb(30, 30, 46),
+                background_panel: rgb(37, 37, 56),
+                background_element: rgb(49, 50, 68),
+                foreground: rgb(205, 214, 244),
+                muted: rgb(147, 153, 178),
+                accent: rgb(245, 194, 231),
+                user: rgb(137, 180, 250),
+                assistant: rgb(205, 214, 244),
+                tool: rgb(147, 153, 178),
+                status: rgb(147, 153, 178),
+                error: rgb(243, 139, 168),
+                warning: rgb(249, 226, 175),
+                success: rgb(166, 227, 161),
+                info: rgb(148, 226, 213),
+            },
+            "gruvbox" => Theme {
+                background: rgb(40, 40, 40),
+                background_panel: rgb(50, 48, 47),
+                background_element: rgb(60, 56, 54),
+                foreground: rgb(235, 219, 178),
+                muted: rgb(146, 131, 116),
+                accent: rgb(142, 192, 124),
+                user: rgb(131, 165, 152),
+                assistant: rgb(235, 219, 178),
+                tool: rgb(146, 131, 116),
+                status: rgb(146, 131, 116),
+                error: rgb(251, 73, 52),
+                warning: rgb(254, 128, 25),
+                success: rgb(184, 187, 38),
+                info: rgb(250, 189, 47),
+            },
+            "tokyonight" => Theme {
+                background: rgb(26, 27, 38),
+                background_panel: rgb(35, 36, 49),
+                background_element: rgb(45, 46, 62),
+                foreground: rgb(200, 211, 245),
+                muted: rgb(130, 139, 184),
+                accent: rgb(255, 150, 108),
+                user: rgb(130, 170, 255),
+                assistant: rgb(200, 211, 245),
+                tool: rgb(130, 139, 184),
+                status: rgb(130, 139, 184),
+                error: rgb(255, 117, 127),
+                warning: rgb(255, 150, 108),
+                success: rgb(195, 232, 141),
+                info: rgb(130, 170, 255),
+            },
+            _ => return None,
+        };
+        Some(theme)
+    }
+}
+
+/// Named theme identifiers selectable with `/theme`.
+pub const THEME_NAMES: [&str; 5] = ["devcode", "dracula", "catppuccin", "gruvbox", "tokyonight"];
+
 pub struct App {
     base: String,
     theme: Theme,
+    theme_name: String,
     auth: String,
     sessions: Vec<SessionRow>,
     selected: usize,
@@ -148,6 +229,7 @@ pub fn run() -> ExitCode {
     let mut app = App {
         base,
         theme: Theme::default(),
+        theme_name: "devcode".to_owned(),
         auth,
         sessions: Vec::new(),
         selected: 0,
@@ -824,6 +906,35 @@ impl App {
                 } else {
                     self.model = Some(argument.to_owned());
                     self.set_status(format!("model set to {argument}"), false);
+                }
+                self.input.clear();
+                return;
+            }
+            "theme" | "themes" => {
+                if argument.is_empty() {
+                    let current = self.theme_name.clone();
+                    let next = THEME_NAMES
+                        .iter()
+                        .skip_while(|name| **name != current)
+                        .nth(1)
+                        .copied()
+                        .unwrap_or(THEME_NAMES[0]);
+                    self.theme = Theme::named(next).unwrap_or_default();
+                    self.theme_name = next.to_owned();
+                    self.set_status(format!("theme: {next}"), false);
+                } else {
+                    let next = THEME_NAMES
+                        .iter()
+                        .find(|name| name.eq_ignore_ascii_case(&argument))
+                        .copied();
+                    let Some(next) = next else {
+                        self.set_status(format!("unknown theme: {argument}"), true);
+                        self.input.clear();
+                        return;
+                    };
+                    self.theme = Theme::named(next).unwrap_or_default();
+                    self.theme_name = next.to_owned();
+                    self.set_status(format!("theme set to {next}"), false);
                 }
                 self.input.clear();
                 return;
@@ -1509,6 +1620,7 @@ mod tests {
             base: String::new(),
             auth: String::new(),
             theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -1553,6 +1665,7 @@ mod tests {
             base: String::new(),
             auth: String::new(),
             theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -1599,6 +1712,7 @@ mod tests {
             base: String::new(),
             auth: String::new(),
             theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
             sessions: Vec::new(),
             selected: 0,
             transcript: Vec::new(),
@@ -1703,6 +1817,7 @@ mod tests {
             base: String::new(),
             auth: String::new(),
             theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
             sessions: vec![],
             selected: 0,
             transcript: vec![],
@@ -1773,6 +1888,7 @@ mod tests {
             base: String::new(),
             auth: String::new(),
             theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
             sessions: vec![],
             selected: 0,
             transcript: vec!["you › hi".to_owned()],
