@@ -910,6 +910,11 @@ impl App {
                 self.input.clear();
                 return;
             }
+            "sessions" => {
+                self.input.clear();
+                self.open_session_list();
+                return;
+            }
             "theme" | "themes" => {
                 if argument.is_empty() {
                     let current = self.theme_name.clone();
@@ -1057,6 +1062,45 @@ impl App {
                 self.set_status("sent".to_owned(), false);
                 self.last_messages_refresh = Instant::now() - Duration::from_secs(60);
                 self.start_sse(id);
+            }
+            Err(error) => self.set_status(error, true),
+        }
+    }
+
+    /// Open the session list dialog (Bun: `DialogSessionList`), listing all
+    /// sessions across projects. Falls back to the current session list.
+    fn open_session_list(&mut self) {
+        match http_get_with_timeout(self, "/api/session?order=desc&limit=50", Duration::from_secs(30)) {
+            Ok(body) => {
+                let sessions: Vec<SessionRow> = body
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|row| SessionRow {
+                                id: row
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                title: row
+                                    .get("title")
+                                    .and_then(Value::as_str)
+                                    .filter(|title| !title.is_empty())
+                                    .map(|title| title.to_owned())
+                                    .unwrap_or_else(|| "(untitled)".to_owned()),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if sessions.is_empty() {
+                    self.set_status("no sessions found".to_owned(), true);
+                    return;
+                }
+                self.sessions = sessions;
+                self.selected = 0;
+                self.seen_len = usize::MAX;
+                self.refresh_messages(true);
             }
             Err(error) => self.set_status(error, true),
         }
