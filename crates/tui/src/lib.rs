@@ -342,6 +342,16 @@ fn http_post_with_timeout(
     response.into_json::<Value>().map_err(|e| e.to_string())
 }
 
+fn http_patch(client: &App, path: &str, body: &Value) -> Result<Value, String> {
+    let response = ureq::patch(&format!("{}{}", client.base, path))
+        .set("authorization", &client.auth)
+        .set("content-type", "application/json")
+        .timeout(Duration::from_secs(10))
+        .send_json(body.clone())
+        .map_err(http_error)?;
+    response.into_json::<Value>().map_err(|e| e.to_string())
+}
+
 fn http_error(error: ureq::Error) -> String {
     match error {
         ureq::Error::Status(code, response) => {
@@ -875,6 +885,16 @@ impl App {
         }
     }
 
+    /// Rename the selected session via PATCH /api/session/{id} with a new title.
+    /// Rename the selected session via PATCH /api/session/{id} with a new title.
+    fn rename_session(&mut self, id: &str, title: &str) -> Result<bool, String> {
+        let body = json!({ "title": title });
+        match http_patch(self, &format!("/api/session/{id}"), &body) {
+            Ok(_) => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
     fn send(&mut self) {
         let (command, argument) = {
             let (command, argument) = parse_command(&self.input);
@@ -908,6 +928,27 @@ impl App {
                     self.set_status(format!("model set to {argument}"), false);
                 }
                 self.input.clear();
+                return;
+            }
+            "rename" => {
+                let Some(id) = self.selected_id() else {
+                    self.input.clear();
+                    return;
+                };
+                if argument.is_empty() {
+                    self.set_status("usage: /rename <title>".to_string(), true);
+                    self.input.clear();
+                    return;
+                }
+                self.input.clear();
+                match self.rename_session(&id, argument.as_str()) {
+                    Ok(true) => {
+                        self.set_status(format!("renamed to {argument}"), false);
+                        self.refresh_sessions();
+                    }
+                    Ok(false) => self.set_status("session not found".to_owned(), true),
+                    Err(error) => self.set_status(error, true),
+                }
                 return;
             }
             "sessions" => {
