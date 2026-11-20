@@ -1084,7 +1084,7 @@ impl App {
 fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let root = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(3), Constraint::Length(1)])
         .split(frame.area());
     let main = Layout::default()
         .direction(Direction::Horizontal)
@@ -1094,8 +1094,35 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(main[1]);
+    // session tabs bar at top (root[0])
+    if !app.sessions.is_empty() {
+        let tab_items: Vec<ListItem> = app
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(i, session)| {
+                let style = if i == app.selected {
+                    Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.muted)
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!(" {} ", session.title),
+                    style,
+                )))
+            })
+            .collect();
+        let tab_list = List::new(tab_items)
+            .block(
+                Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+                    .style(Style::default().bg(app.theme.background)),
+            )
+            .style(Style::default().bg(app.theme.background));
+        frame.render_widget(tab_list, root[0]);
+    }
 
-    // sidebar
     let items: Vec<ListItem> = app
         .sessions
         .iter()
