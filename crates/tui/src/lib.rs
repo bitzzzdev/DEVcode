@@ -1208,14 +1208,6 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         frame.render_widget(tab_list, root[0]);
     }
 
-    // startup overlay: shows while there are no sessions yet, like the JS
-    // StartupLoading component (plugins.ready -> "Finishing startup…").
-    if app.sessions.is_empty() {
-        let overlay = Paragraph::new(" Loading sessions… ")
-            .style(Style::default().fg(app.theme.muted).bg(app.theme.background));
-        frame.render_widget(overlay, main[0]);
-    }
-
     let items: Vec<ListItem> = app
         .sessions
         .iter()
@@ -1255,6 +1247,53 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         )
         .highlight_symbol("❯ ");
     frame.render_stateful_widget(sidebar, main[0], &mut list_state);
+
+    // Home screen: centered logo + composer when there is no session to show
+    if app.mcp.is_none() && app.prompts.is_none() && app.sessions.is_empty() {
+        let logo = [
+            "                   ",
+            "█▀▀█ █▀▀█ █▀▀█ █▀▀▄",
+            "█__█ █__█ █^^^ █__█",
+            "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀",
+        ];
+        let mut y = right[0].y;
+        let logo_w = logo[0].len() as u16;
+        let logo_x = right[0].x + (right[0].width.saturating_sub(logo_w)) / 2;
+        for row in logo {
+            let rect = ratatui::layout::Rect {
+                x: logo_x,
+                y,
+                width: logo_w.min(right[0].width),
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(row.to_owned())
+                    .style(Style::default().fg(app.theme.accent).bg(app.theme.background)),
+                rect,
+            );
+            y = y.saturating_add(1);
+        }
+        let composer = Paragraph::new(" type a message and press Enter ")
+            .style(Style::default().fg(app.theme.muted).bg(app.theme.background))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+                    .style(Style::default().bg(app.theme.background)),
+            );
+        let composer_x = right[0].x + (right[0].width.saturating_sub(32)) / 2;
+        let composer_y = y.saturating_add(1);
+        frame.render_widget(
+            composer,
+            ratatui::layout::Rect {
+                x: composer_x,
+                y: composer_y,
+                width: 32.min(right[0].width),
+                height: 1,
+            },
+        );
+        return;
+    }
 
     // transcript
     app.viewport_h = right[0].height.saturating_sub(2).max(1);
@@ -1369,6 +1408,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         root[1],
     );
 
+    // Dialogs render on top of the main content, including the Home screen.
     if app.mcp.is_some() {
         draw_mcp(frame, app);
     }
