@@ -965,13 +965,21 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .iter()
         .map(|line| {
             let style = if line.starts_with("you ›") {
-                Style::default().fg(app.theme.user)
+                // user rows sit on the raised panel background like the JS frame
+                Style::default().fg(app.theme.user).bg(app.theme.background_panel)
             } else if line.starts_with("assistant ›") {
-                Style::default().fg(app.theme.assistant)
-            } else if line.starts_with("  [") {
-                Style::default().fg(app.theme.tool)
+                Style::default().fg(app.theme.assistant).bg(app.theme.background)
+            } else if let Some(close) = line.find(']') {
+                // tool rows: "[name] status" -> color the row by outcome
+                let status = line[close + 1..].trim();
+                let fg = if status == "error" || status == "failed" {
+                    app.theme.error
+                } else {
+                    app.theme.tool
+                };
+                Style::default().fg(fg).bg(app.theme.background)
             } else {
-                Style::default().fg(app.theme.foreground)
+                Style::default().fg(app.theme.foreground).bg(app.theme.background)
             };
             Line::from(Span::styled(line.clone(), style))
         })
