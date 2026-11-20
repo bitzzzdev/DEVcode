@@ -44,5 +44,5 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_S
 
 [profile.release]
 codegen-units = 1
-lto = "thin"
+lto = "fat"
 strip = "symbols"
