@@ -1,6 +1,7 @@
-//! Minimal ratatui front-end for the Rust service. Status: Phase 8 MVP.
-//! Talks to the managed service over the same HTTP/basic-auth contract the Bun
-//! TUI uses. No theme port, no sidebar plugins, no session forking yet.
+//! Minimal ratatui front-end for the Rust service. Talks to the managed service
+//! over the same HTTP/basic-auth contract the Bun TUI uses. Theme colors come
+//! from the in-app `Theme` (dark by default); sidebar plugins and session
+//! forking are later increments.
 
 use std::io::{Stdout, Write};
 use std::process::{Command, ExitCode};
@@ -18,6 +19,10 @@ use serde_json::{json, Value};
 
 const AUTH_USER: &str = "devcode";
 const SESSION_PAGE: &str = "/api/session?order=desc&limit=20";
+
+const SPINNER_FRAMES: [&str; 10] = [
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+];
 
 pub struct SessionRow {
     pub id: String,
@@ -57,8 +62,50 @@ pub struct PromptsDialog {
     pub selected: usize,
 }
 
+/// TUI color theme. Defaults to the dark palette of the JS TUI default devcode
+/// theme; later increments resolve user themes from the theme registry.
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub background: Color,
+    pub background_panel: Color,
+    pub background_element: Color,
+    pub foreground: Color,
+    pub muted: Color,
+    pub accent: Color,
+    pub user: Color,
+    pub assistant: Color,
+    pub tool: Color,
+    pub status: Color,
+    pub error: Color,
+    pub warning: Color,
+    pub success: Color,
+    pub info: Color,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            background: Color::Rgb(10, 10, 10),
+            background_panel: Color::Rgb(20, 20, 20),
+            background_element: Color::Rgb(30, 30, 30),
+            foreground: Color::Rgb(238, 238, 238),
+            muted: Color::Rgb(128, 128, 128),
+            accent: Color::Rgb(157, 124, 216),
+            user: Color::Rgb(92, 156, 245),
+            assistant: Color::Rgb(238, 238, 238),
+            tool: Color::Rgb(128, 128, 128),
+            status: Color::Rgb(128, 128, 128),
+            error: Color::Rgb(224, 108, 117),
+            warning: Color::Rgb(245, 167, 66),
+            success: Color::Rgb(127, 216, 143),
+            info: Color::Rgb(86, 182, 194),
+        }
+    }
+}
+
 pub struct App {
     base: String,
+    theme: Theme,
     auth: String,
     sessions: Vec<SessionRow>,
     selected: usize,
@@ -81,6 +128,7 @@ pub struct App {
     // provisional assistant text of the in-flight run (from the SSE delta
     // stream); reconciled by the message poll, cleared on rebuild
     stream_buffer: String,
+    spinner_frame: u8,
     sse_rx: Option<std::sync::mpsc::Receiver<SseMsg>>,
 }
 
@@ -99,6 +147,7 @@ pub fn run() -> ExitCode {
     let base = registration.url.trim_end_matches('/').to_owned();
     let mut app = App {
         base,
+        theme: Theme::default(),
         auth,
         sessions: Vec::new(),
         selected: 0,
@@ -118,6 +167,7 @@ pub fn run() -> ExitCode {
         last_sessions_refresh: Instant::now() - Duration::from_secs(60),
         last_messages_refresh: Instant::now() - Duration::from_secs(60),
         stream_buffer: String::new(),
+        spinner_frame: 0,
         sse_rx: None,
     };
     app.refresh_sessions();
@@ -893,10 +943,16 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         list_state.select(Some(app.selected));
     }
     let sidebar = List::new(items)
-        .block(Block::default().borders(Borders::RIGHT).title(" sessions "))
+        .block(
+            Block::default()
+                .borders(Borders::RIGHT)
+                .title(" sessions ")
+                .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+                .style(Style::default().bg(app.theme.background)),
+        )
         .highlight_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("❯ ");
@@ -909,13 +965,13 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .iter()
         .map(|line| {
             let style = if line.starts_with("you ›") {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(app.theme.user)
             } else if line.starts_with("assistant ›") {
-                Style::default().fg(Color::White)
+                Style::default().fg(app.theme.assistant)
             } else if line.starts_with("  [") {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(app.theme.tool)
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(app.theme.foreground)
             };
             Line::from(Span::styled(line.clone(), style))
         })
@@ -924,12 +980,18 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "assistant › (streaming)",
-            Style::default().fg(Color::White),
+            Style::default().fg(app.theme.assistant),
         )));
         for text in app.stream_buffer.lines() {
-            lines.push(Line::from(Span::styled(text.to_owned(), Style::default().fg(Color::Gray))));
+            lines.push(Line::from(Span::styled(
+                text.to_owned(),
+                Style::default().fg(app.theme.foreground),
+            )));
         }
-        lines.push(Line::from(Span::styled("▌", Style::default().fg(Color::Yellow))));
+        lines.push(Line::from(Span::styled(
+            SPINNER_FRAMES[app.spinner_frame as usize].to_owned(),
+            Style::default().fg(app.theme.accent),
+        )));
     }
     let max_scroll = (lines.len().saturating_sub(app.viewport_h as usize)) as u16;
     if !app.stream_buffer.is_empty() {
@@ -941,13 +1003,15 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
     let transcript = Paragraph::new(lines)
         .block(Block::default().borders(Borders::NONE))
+        .style(Style::default().bg(app.theme.background))
         .wrap(Wrap { trim: false })
         .scroll((app.scroll, 0));
     frame.render_widget(transcript, right[0]);
 
     // input
     let input = Paragraph::new(format!("> {}", app.input))
-        .block(Block::default().borders(Borders::TOP).title(" message "));
+        .block(Block::default().borders(Borders::TOP).title(" message "))
+        .style(Style::default().fg(app.theme.foreground).bg(app.theme.background));
     frame.render_widget(input, right[1]);
     let cursor_x = right[1].x + 2 + app.input.chars().count() as u16 + 1;
     frame.set_cursor_position((
@@ -966,12 +1030,11 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         format!(" {} | {model}{help}", app.status)
     };
-    let style = if app.status_err {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    frame.render_widget(Paragraph::new(status_line).style(style), root[1]);
+    frame.render_widget(
+        Paragraph::new(status_line)
+            .style(Style::default().fg(if app.status_err { app.theme.error } else { app.theme.status }).bg(app.theme.background)),
+        root[1],
+    );
 
     if app.mcp.is_some() {
         draw_mcp(frame, app);
@@ -997,7 +1060,9 @@ fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" MCP prompts ({}) ", dialog.prompts.len()));
+        .title(format!(" MCP prompts ({}) ", dialog.prompts.len()))
+        .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+        .style(Style::default().bg(app.theme.background));
 
     if dialog.prompts.is_empty() {
         let empty = Paragraph::new(
@@ -1019,16 +1084,16 @@ fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
             let mut spans = vec![Span::styled(
                 format!("/{command}"),
                 Style::default()
-                    .fg(Color::Magenta)
+                    .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD),
             )];
             if !args.is_empty() {
                 spans.push(Span::raw("  "));
-                spans.push(Span::styled(args, Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(args, Style::default().fg(app.theme.foreground)));
             }
             if !description.is_empty() {
                 spans.push(Span::raw("  "));
-                spans.push(Span::styled(description, Style::default().fg(Color::Gray)));
+                spans.push(Span::styled(description, Style::default().fg(app.theme.muted)));
             }
             ListItem::new(Line::from(spans))
         })
@@ -1111,7 +1176,9 @@ fn draw_mcp(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" MCP servers ({}) ", dialog.servers.len()));
+        .title(format!(" MCP servers ({}) ", dialog.servers.len()))
+        .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+        .style(Style::default().bg(app.theme.background));
 
     if dialog.detail {
         let content = mcp_detail_text(dialog);
@@ -1137,18 +1204,18 @@ fn draw_mcp(frame: &mut Frame<'_>, app: &mut App) {
         .iter()
         .map(|server| {
             let dot_color = match server.status.as_str() {
-                "connected" => Color::Green,
-                "pending" => Color::Yellow,
-                "failed" => Color::Red,
-                "needs_auth" => Color::Yellow,
-                "disabled" => Color::DarkGray,
-                _ => Color::Gray,
+                "connected" => app.theme.success,
+                "pending" => app.theme.warning,
+                "failed" => app.theme.error,
+                "needs_auth" => app.theme.warning,
+                "disabled" => app.theme.muted,
+                _ => app.theme.muted,
             };
             let label_color = match server.status.as_str() {
-                "failed" => Color::Red,
-                "needs_auth" => Color::Yellow,
-                "connected" => Color::Green,
-                _ => Color::DarkGray,
+                "failed" => app.theme.error,
+                "needs_auth" => app.theme.warning,
+                "connected" => app.theme.success,
+                _ => app.theme.muted,
             };
             ListItem::new(Line::from(vec![
                 Span::styled("● ", Style::default().fg(dot_color)),
@@ -1308,6 +1375,10 @@ fn event_loop(app: &mut App, stdout: &mut Stdout) -> Result<(), Box<dyn std::err
         }
 
         app.drain_sse();
+        if !app.stream_buffer.is_empty() {
+            // the event loop polls every 100ms; advance the spinner frame on each pass
+            app.spinner_frame = (app.spinner_frame + 1) % SPINNER_FRAMES.len() as u8;
+        }
         if app.last_messages_refresh.elapsed() >= Duration::from_millis(750) {
             app.refresh_messages(false);
         }
@@ -1352,6 +1423,7 @@ mod tests {
         let mut app = App {
             base: String::new(),
             auth: String::new(),
+            theme: Theme::default(),
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -1371,6 +1443,7 @@ mod tests {
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
             stream_buffer: String::new(),
+            spinner_frame: 0,
             sse_rx: None,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -1394,6 +1467,7 @@ mod tests {
         let mut app = App {
             base: String::new(),
             auth: String::new(),
+            theme: Theme::default(),
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -1413,6 +1487,7 @@ mod tests {
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
             stream_buffer: "partial output\nsecond line".to_owned(),
+            spinner_frame: 0,
             sse_rx: None,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -1426,7 +1501,10 @@ mod tests {
         assert!(text.contains("(streaming)"), "streaming header missing: {text}");
         assert!(text.contains("partial output"), "streamed text missing: {text}");
         assert!(text.contains("second line"), "streamed text missing: {text}");
-        assert!(text.contains("▌"), "cursor glyph missing: {text}");
+        assert!(
+            text.contains(SPINNER_FRAMES[app.spinner_frame as usize]),
+            "spinner glyph missing: {text}",
+        );
     }
 
     #[test]
@@ -1435,6 +1513,7 @@ mod tests {
         let mut app = App {
             base: String::new(),
             auth: String::new(),
+            theme: Theme::default(),
             sessions: Vec::new(),
             selected: 0,
             transcript: Vec::new(),
@@ -1451,6 +1530,7 @@ mod tests {
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
             stream_buffer: String::new(),
+            spinner_frame: 0,
             sse_rx: Some(rx),
         };
         tx.send(SseMsg::Delta("hel".to_owned())).unwrap();
@@ -1537,6 +1617,7 @@ mod tests {
         let mut app = App {
             base: String::new(),
             auth: String::new(),
+            theme: Theme::default(),
             sessions: vec![],
             selected: 0,
             transcript: vec![],
@@ -1561,6 +1642,7 @@ mod tests {
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
             stream_buffer: String::new(),
+            spinner_frame: 0,
             sse_rx: None,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -1605,6 +1687,7 @@ mod tests {
         let mut app = App {
             base: String::new(),
             auth: String::new(),
+            theme: Theme::default(),
             sessions: vec![],
             selected: 0,
             transcript: vec!["you › hi".to_owned()],
@@ -1639,6 +1722,7 @@ mod tests {
             last_sessions_refresh: Instant::now(),
             last_messages_refresh: Instant::now(),
             stream_buffer: String::new(),
+            spinner_frame: 0,
             sse_rx: None,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
