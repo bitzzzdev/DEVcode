@@ -64,18 +64,23 @@ else
   [ -n "$VERSION" ] || die "no releases found under $API/releases"
 fi
 
+case "$VERSION" in
+  *rust*) BIN_NAME="DEVcode-rust" ;;
+  *) BIN_NAME="DEVcode" ;;
+esac
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 log "Downloading $BIN $VERSION ($TARGET)"
-url="$API/packages/generic/$GROUP/$VERSION/$BIN-$TARGET"
-fetch -o "$tmp/$BIN-$TARGET" "$url" ||
+url="$API/packages/generic/$GROUP/$VERSION/$BIN_NAME-$TARGET"
+fetch -o "$tmp/$BIN_NAME-$TARGET" "$url" ||
   { log "URL: $url"; die "download failed (is $VERSION published for $TARGET?)"; }
 fetch -o "$tmp/sha256sums.txt" "$API/packages/generic/$GROUP/$VERSION/sha256sums.txt" ||
   die "checksum list missing for $VERSION"
-(cd "$tmp" && grep " $BIN-$TARGET\$" sha256sums.txt | sha256sum -c -) ||
-  die "checksum mismatch for $BIN-$TARGET"
-chmod +x "$tmp/$BIN-$TARGET"
+(cd "$tmp" && grep " $BIN_NAME-$TARGET\$" sha256sums.txt | sha256sum -c -) ||
+  die "checksum mismatch for $BIN_NAME-$TARGET"
+chmod +x "$tmp/$BIN_NAME-$TARGET"
 
 existing=$(command -v "$BIN" 2>/dev/null || true)
 if [ -n "$existing" ]; then
@@ -85,7 +90,7 @@ else
   DEST="${DEVCODE_INSTALL_DIR:-$HOME/.local/bin}/$BIN"
   mkdir -p "$(dirname "$DEST")"
 fi
-mv "$tmp/$BIN-$TARGET" "$DEST"
+mv "$tmp/$BIN_NAME-$TARGET" "$DEST"
 
 log "Installed: $DEST"
 "$DEST" --version >&2
