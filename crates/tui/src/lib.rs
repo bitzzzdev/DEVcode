@@ -20,9 +20,7 @@ use serde_json::{json, Value};
 const AUTH_USER: &str = "devcode";
 const SESSION_PAGE: &str = "/api/session?order=desc&limit=20";
 
-const SPINNER_FRAMES: [&str; 10] = [
-    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-];
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub struct SessionRow {
     pub id: String,
@@ -35,6 +33,7 @@ pub struct SessionRow {
 enum SseMsg {
     Delta(String),
     Ended,
+    Failed(String),
 }
 
 pub struct McpRow {
@@ -60,6 +59,17 @@ pub struct McpDialog {
 pub struct PromptsDialog {
     pub prompts: Vec<McpPromptEntry>,
     pub selected: usize,
+}
+
+/// Client connection lifecycle, mirrored from the JS TUI client connection
+/// (`connecting` -> `connected`, and on stream loss `reconnecting`, escalating to
+/// `disconnected` once retries pass the devtools threshold).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnStatus {
+    Connected,
+    Connecting,
+    Reconnecting,
+    Disconnected,
 }
 
 /// TUI color theme. Defaults to the dark palette of the JS TUI default devcode
@@ -211,6 +221,13 @@ pub struct App {
     stream_buffer: String,
     spinner_frame: u8,
     sse_rx: Option<std::sync::mpsc::Receiver<SseMsg>>,
+    // client connection lifecycle mirrored from the JS TUI client connection
+    conn_status: ConnStatus,
+    conn_attempt: u32,
+    conn_error: Option<String>,
+    conn_since: Instant,
+    // whether the TUI owns the managed service lifecycle (JS `client.restart`)
+    managed: bool,
 }
 
 pub fn run() -> ExitCode {
@@ -251,6 +268,11 @@ pub fn run() -> ExitCode {
         stream_buffer: String::new(),
         spinner_frame: 0,
         sse_rx: None,
+        conn_status: ConnStatus::Connected,
+        conn_attempt: 0,
+        conn_error: None,
+        conn_since: Instant::now(),
+        managed: false,
     };
     app.refresh_sessions();
     app.refresh_messages(true);
@@ -483,7 +505,12 @@ fn markdown_line_spans(line: &str, theme: &Theme) -> Vec<(String, Style)> {
         if text.is_empty() {
             return Vec::new();
         }
-        return vec![(text, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))];
+        return vec![(
+            text,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )];
     }
     let parts: Vec<&str> = line.split('`').collect();
     let mut spans: Vec<(String, Style)> = Vec::new();
@@ -515,7 +542,12 @@ fn text_spans(text: &str, theme: &Theme) -> Vec<(String, Style)> {
             }
             let bold_text = rest[open + 2..content_end].to_owned();
             if !bold_text.is_empty() {
-                spans.push((bold_text, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+                spans.push((
+                    bold_text,
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ));
             }
             rest = &rest[closing..];
             continue;
@@ -553,13 +585,23 @@ pub struct McpPromptEntry {
 pub fn sanitize_command_part(value: &str) -> String {
     value
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
 /// The Bun slash-command name for an MCP prompt: `server:prompt`, both sanitized.
 pub fn mcp_prompt_command_name(server: &str, name: &str) -> String {
-    format!("{}:{}", sanitize_command_part(server), sanitize_command_part(name))
+    format!(
+        "{}:{}",
+        sanitize_command_part(server),
+        sanitize_command_part(name)
+    )
 }
 
 /// Parse positional prompt arguments from an argument string, mirroring Bun's
@@ -658,7 +700,10 @@ pub fn mcp_prompt_rows(body: &Value) -> Vec<McpPromptEntry> {
                             arguments
                                 .iter()
                                 .filter_map(|argument| {
-                                    argument.get("name").and_then(Value::as_str).map(str::to_owned)
+                                    argument
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned)
                                 })
                                 .collect()
                         })
@@ -682,6 +727,42 @@ impl App {
     fn set_status(&mut self, message: String, err: bool) {
         self.status = message;
         self.status_err = err;
+    }
+
+    /// A fresh stream attempt (or any successful refresh) means the client is
+    /// talking to the service again.
+    fn note_connect(&mut self) {
+        self.conn_status = ConnStatus::Connected;
+        self.conn_attempt = 0;
+        self.conn_error = None;
+        self.conn_since = Instant::now();
+    }
+
+    /// Mark the connection as lost; retries past the third attempt surface as
+    /// fully disconnected, mirroring the JS devtools threshold.
+    fn note_disconnect(&mut self, error: String) {
+        self.conn_attempt += 1;
+        self.conn_status = if self.conn_attempt >= 3 {
+            ConnStatus::Disconnected
+        } else {
+            ConnStatus::Reconnecting
+        };
+        self.conn_error = Some(error);
+        self.conn_since = Instant::now();
+    }
+
+    /// The JS TUI shows the reconnecting overlay after a short grace period
+    /// once the connection is no longer connected.
+    fn show_reconnecting(&self) -> bool {
+        if self.conn_status == ConnStatus::Connected {
+            return false;
+        }
+        let delay = if self.conn_status == ConnStatus::Reconnecting {
+            Duration::from_millis(1000)
+        } else {
+            Duration::from_millis(5000)
+        };
+        self.conn_since.elapsed() >= delay
     }
 
     fn selected_id(&self) -> Option<String> {
@@ -723,8 +804,12 @@ impl App {
                     .and_then(|id| self.sessions.iter().position(|s| s.id == id))
                     .unwrap_or(0);
                 self.last_sessions_refresh = Instant::now();
+                self.note_connect();
             }
-            Err(error) => self.set_status(error, true),
+            Err(error) => {
+                self.note_disconnect(error.clone());
+                self.set_status(error, true);
+            }
         }
     }
 
@@ -751,14 +836,19 @@ impl App {
                     self.stream_buffer.clear();
                 }
                 self.last_messages_refresh = Instant::now();
+                self.note_connect();
             }
-            Err(error) => self.set_status(error, true),
+            Err(error) => {
+                self.note_disconnect(error.clone());
+                self.set_status(error, true);
+            }
         }
     }
 
     /// Drain every pending SSE message for the selected run.
     fn drain_sse(&mut self) {
         let mut ended = false;
+        let mut failed = None;
         if let Some(rx) = &self.sse_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -771,10 +861,17 @@ impl App {
                         }
                     }
                     SseMsg::Ended => ended = true,
+                    SseMsg::Failed(error) => {
+                        failed = Some(error);
+                        ended = true;
+                    }
                 }
             }
         }
         if ended {
+            if let Some(error) = failed {
+                self.note_disconnect(error);
+            }
             self.sse_rx = None;
             // Force a full rebuild on the next poll; the buffer is cleared there.
             self.seen_len = usize::MAX;
@@ -787,6 +884,7 @@ impl App {
     /// poll remains the reconciliation path.
     fn start_sse(&mut self, session_id: String) {
         self.stream_buffer.clear();
+        self.note_connect();
         let (tx, rx) = std::sync::mpsc::channel::<SseMsg>();
         self.sse_rx = Some(rx);
         let base = self.base.clone();
@@ -799,7 +897,7 @@ impl App {
                 .set("accept", "text/event-stream")
                 .call();
             let Ok(response) = result else {
-                let _ = tx.send(SseMsg::Ended);
+                let _ = tx.send(SseMsg::Failed("service unreachable".to_owned()));
                 return;
             };
             let mut reader = std::io::BufReader::new(response.into_reader());
@@ -818,7 +916,10 @@ impl App {
                                     if let Some(text) = serde_json::from_str::<Value>(&data)
                                         .ok()
                                         .and_then(|value| {
-                                            value.get("text").and_then(Value::as_str).map(str::to_owned)
+                                            value
+                                                .get("text")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_owned)
                                         })
                                     {
                                         if tx.send(SseMsg::Delta(text)).is_err() {
@@ -1111,7 +1212,11 @@ impl App {
     /// Open the session list dialog (Bun: `DialogSessionList`), listing all
     /// sessions across projects. Falls back to the current session list.
     fn open_session_list(&mut self) {
-        match http_get_with_timeout(self, "/api/session?order=desc&limit=50", Duration::from_secs(30)) {
+        match http_get_with_timeout(
+            self,
+            "/api/session?order=desc&limit=50",
+            Duration::from_secs(30),
+        ) {
             Ok(body) => {
                 let sessions: Vec<SessionRow> = body
                     .get("data")
@@ -1169,7 +1274,11 @@ impl App {
 fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let root = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
     let main = Layout::default()
         .direction(Direction::Horizontal)
@@ -1187,7 +1296,9 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .enumerate()
             .map(|(i, session)| {
                 let style = if i == app.selected {
-                    Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(app.theme.muted)
                 };
@@ -1201,7 +1312,11 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .block(
                 Block::default()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+                    .border_style(
+                        Style::default()
+                            .fg(app.theme.background_element)
+                            .bg(app.theme.background),
+                    )
                     .style(Style::default().bg(app.theme.background)),
             )
             .style(Style::default().bg(app.theme.background));
@@ -1224,20 +1339,30 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .get(app.selected)
         .map(|session| session.title.clone())
         .unwrap_or_else(|| "sessions".to_owned());
-    let session_count = format!(" {} session{} ", app.sessions.len(), if app.sessions.len() == 1 { "" } else { "s" });
+    let session_count = format!(
+        " {} session{} ",
+        app.sessions.len(),
+        if app.sessions.len() == 1 { "" } else { "s" }
+    );
     let sidebar = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::RIGHT)
                 .title(Line::from(Span::styled(
                     format!(" {active_title} "),
-                    Style::default().fg(app.theme.foreground).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(app.theme.foreground)
+                        .add_modifier(Modifier::BOLD),
                 )))
                 .title_bottom(Line::from(Span::styled(
                     session_count,
                     Style::default().fg(app.theme.muted),
                 )))
-                .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+                .border_style(
+                    Style::default()
+                        .fg(app.theme.background_element)
+                        .bg(app.theme.background),
+                )
                 .style(Style::default().bg(app.theme.background)),
         )
         .highlight_style(
@@ -1267,18 +1392,29 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 height: 1,
             };
             frame.render_widget(
-                Paragraph::new(row.to_owned())
-                    .style(Style::default().fg(app.theme.accent).bg(app.theme.background)),
+                Paragraph::new(row.to_owned()).style(
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .bg(app.theme.background),
+                ),
                 rect,
             );
             y = y.saturating_add(1);
         }
         let composer = Paragraph::new(" type a message and press Enter ")
-            .style(Style::default().fg(app.theme.muted).bg(app.theme.background))
+            .style(
+                Style::default()
+                    .fg(app.theme.muted)
+                    .bg(app.theme.background),
+            )
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+                    .border_style(
+                        Style::default()
+                            .fg(app.theme.background_element)
+                            .bg(app.theme.background),
+                    )
                     .style(Style::default().bg(app.theme.background)),
             );
         let composer_x = right[0].x + (right[0].width.saturating_sub(32)) / 2;
@@ -1303,9 +1439,13 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .map(|line| {
             let style = if line.starts_with("you ›") {
                 // user rows sit on the raised panel background like the JS frame
-                Style::default().fg(app.theme.user).bg(app.theme.background_panel)
+                Style::default()
+                    .fg(app.theme.user)
+                    .bg(app.theme.background_panel)
             } else if line.starts_with("assistant ›") {
-                Style::default().fg(app.theme.assistant).bg(app.theme.background)
+                Style::default()
+                    .fg(app.theme.assistant)
+                    .bg(app.theme.background)
             } else if let Some(close) = line.find(']') {
                 // tool rows: "[name] status" -> color the row by outcome
                 let status = line[close + 1..].trim();
@@ -1316,10 +1456,15 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 };
                 Style::default().fg(fg).bg(app.theme.background)
             } else {
-                Style::default().fg(app.theme.foreground).bg(app.theme.background)
+                Style::default()
+                    .fg(app.theme.foreground)
+                    .bg(app.theme.background)
             };
             if line.starts_with("assistant ›") {
-                let text = line.strip_prefix("assistant ›").unwrap_or(line).trim_start();
+                let text = line
+                    .strip_prefix("assistant ›")
+                    .unwrap_or(line)
+                    .trim_start();
                 let mut spans = vec![Span::styled("assistant ›".to_owned(), style)];
                 spans.extend(
                     markdown_line_spans(text, &app.theme)
@@ -1364,7 +1509,12 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(transcript, right[0]);
 
     // input area: JS-style composer with a bordered block and prompt prefix
-    let prompt = Span::styled("> ", Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD));
+    let prompt = Span::styled(
+        "> ",
+        Style::default()
+            .fg(app.theme.accent)
+            .add_modifier(Modifier::BOLD),
+    );
     let input_text = Span::styled(app.input.clone(), Style::default().fg(app.theme.foreground));
     let input_line = Line::from(vec![prompt, input_text]);
     let input_block = Block::default()
@@ -1373,7 +1523,11 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             " message ",
             Style::default().fg(app.theme.muted),
         )))
-        .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+        .border_style(
+            Style::default()
+                .fg(app.theme.background_element)
+                .bg(app.theme.background),
+        )
         .style(Style::default().bg(app.theme.background));
     let input = Paragraph::new(input_line)
         .block(input_block)
@@ -1403,8 +1557,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         app.theme.muted
     };
     frame.render_widget(
-        Paragraph::new(footer_line)
-            .style(Style::default().fg(footer_fg).bg(app.theme.background)),
+        Paragraph::new(footer_line).style(Style::default().fg(footer_fg).bg(app.theme.background)),
         root[1],
     );
 
@@ -1415,6 +1568,55 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if app.prompts.is_some() {
         draw_prompts(frame, app);
     }
+    draw_reconnecting(frame, app);
+}
+
+/// Full-screen overlay while the client is reconnecting, ported from the JS
+/// `Reconnecting` component. Managed services show the restart variant; direct
+/// connections show the loss variant.
+fn draw_reconnecting(frame: &mut Frame<'_>, app: &App) {
+    if !app.show_reconnecting() {
+        return;
+    }
+    let area = frame.area();
+    let width = 48u16.min(area.width.saturating_mul(9) / 10);
+    let height = 5u16.min(area.height);
+    let rect = ratatui::layout::Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let (label, hint) = if app.managed {
+        (
+            "Restarting service…",
+            "Your session will resume automatically.",
+        )
+    } else {
+        (
+            "Connection lost…",
+            "Reconnecting to the server automatically.",
+        )
+    };
+    let spinner_line = format!("{} {label}", SPINNER_FRAMES[app.spinner_frame as usize]);
+    let content = Paragraph::new(vec![
+        Line::from(Span::styled(
+            spinner_line,
+            Style::default().fg(app.theme.foreground),
+        )),
+        Line::from(Span::styled(hint, Style::default().fg(app.theme.muted))),
+    ])
+    .style(Style::default().bg(app.theme.background_panel));
+    frame.render_widget(
+        content,
+        ratatui::layout::Rect {
+            x: rect.x + 2,
+            y: rect.y + 1,
+            width: rect.width.saturating_sub(4).max(1),
+            height: rect.height.saturating_sub(2).max(1),
+        },
+    );
 }
 
 fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
@@ -1434,7 +1636,11 @@ fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" MCP prompts ({}) ", dialog.prompts.len()))
-        .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+        .border_style(
+            Style::default()
+                .fg(app.theme.background_element)
+                .bg(app.theme.background),
+        )
         .style(Style::default().bg(app.theme.background));
 
     if dialog.prompts.is_empty() {
@@ -1462,11 +1668,17 @@ fn draw_prompts(frame: &mut Frame<'_>, app: &mut App) {
             )];
             if !args.is_empty() {
                 spans.push(Span::raw("  "));
-                spans.push(Span::styled(args, Style::default().fg(app.theme.foreground)));
+                spans.push(Span::styled(
+                    args,
+                    Style::default().fg(app.theme.foreground),
+                ));
             }
             if !description.is_empty() {
                 spans.push(Span::raw("  "));
-                spans.push(Span::styled(description, Style::default().fg(app.theme.muted)));
+                spans.push(Span::styled(
+                    description,
+                    Style::default().fg(app.theme.muted),
+                ));
             }
             ListItem::new(Line::from(spans))
         })
@@ -1521,10 +1733,7 @@ fn handle_prompts_key(app: &mut App, code: crossterm::event::KeyCode) {
             } else {
                 // Needs arguments: drop `/server:name ` into the input for the
                 // user to complete, like the Bun command palette.
-                app.input = format!(
-                    "/{} ",
-                    mcp_prompt_command_name(&entry.server, &entry.name)
-                );
+                app.input = format!("/{} ", mcp_prompt_command_name(&entry.server, &entry.name));
                 app.prompts = None;
             }
         }
@@ -1550,13 +1759,20 @@ fn draw_mcp(frame: &mut Frame<'_>, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" MCP servers ({}) ", dialog.servers.len()))
-        .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
+        .border_style(
+            Style::default()
+                .fg(app.theme.background_element)
+                .bg(app.theme.background),
+        )
         .style(Style::default().bg(app.theme.background));
 
     if dialog.detail {
         let content = mcp_detail_text(dialog);
         let body = Paragraph::new(content)
-            .block(block.title(format!(" MCP server: {} ", dialog.servers[dialog.selected].name)))
+            .block(block.title(format!(
+                " MCP server: {} ",
+                dialog.servers[dialog.selected].name
+            )))
             .wrap(Wrap { trim: false });
         frame.render_widget(body, rect);
         return;
@@ -1592,14 +1808,22 @@ fn draw_mcp(frame: &mut Frame<'_>, app: &mut App) {
             };
             ListItem::new(Line::from(vec![
                 Span::styled("● ", Style::default().fg(dot_color)),
-                Span::styled(server.name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    server.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  "),
-                Span::styled(mcp_status_label(&server.status), Style::default().fg(label_color)),
+                Span::styled(
+                    mcp_status_label(&server.status),
+                    Style::default().fg(label_color),
+                ),
             ]))
         })
         .collect();
     let mut list_state = ListState::default();
-    list_state.select(Some(dialog.selected.min(dialog.servers.len().saturating_sub(1))));
+    list_state.select(Some(
+        dialog.selected.min(dialog.servers.len().saturating_sub(1)),
+    ));
     let list = List::new(items)
         .block(block.title_bottom(" ↑↓ select · Enter details · Esc close "))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -1623,7 +1847,11 @@ fn mcp_detail_text(dialog: &McpDialog) -> String {
     if let Some(integration_id) = &server.integration_id {
         lines.push(format!("Integration: {integration_id}"));
     }
-    if dialog.error.as_deref().is_some_and(|error| !error.is_empty()) {
+    if dialog
+        .error
+        .as_deref()
+        .is_some_and(|error| !error.is_empty())
+    {
         lines.push(String::new());
         lines.push(dialog.error.clone().unwrap_or_default());
     } else if let Some(error) = &server.error {
@@ -1700,7 +1928,7 @@ fn event_loop(app: &mut App, stdout: &mut Stdout) -> Result<(), Box<dyn std::err
                     }
                     let quit = matches!(key.code, KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL));
                     if quit {
-                        return Ok(())
+                        return Ok(());
                     }
                     if app.prompts.is_some() {
                         handle_prompts_key(app, key.code);
@@ -1834,6 +2062,11 @@ mod tests {
             stream_buffer: String::new(),
             spinner_frame: 0,
             sse_rx: None,
+            conn_status: ConnStatus::Connected,
+            conn_attempt: 0,
+            conn_error: None,
+            conn_since: Instant::now(),
+            managed: false,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -1879,6 +2112,11 @@ mod tests {
             stream_buffer: "partial output\nsecond line".to_owned(),
             spinner_frame: 0,
             sse_rx: None,
+            conn_status: ConnStatus::Connected,
+            conn_attempt: 0,
+            conn_error: None,
+            conn_since: Instant::now(),
+            managed: false,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -1888,9 +2126,18 @@ mod tests {
                 text.push_str(buffer[(x, y)].symbol());
             }
         }
-        assert!(text.contains("(streaming)"), "streaming header missing: {text}");
-        assert!(text.contains("partial output"), "streamed text missing: {text}");
-        assert!(text.contains("second line"), "streamed text missing: {text}");
+        assert!(
+            text.contains("(streaming)"),
+            "streaming header missing: {text}"
+        );
+        assert!(
+            text.contains("partial output"),
+            "streamed text missing: {text}"
+        );
+        assert!(
+            text.contains("second line"),
+            "streamed text missing: {text}"
+        );
         assert!(
             text.contains(SPINNER_FRAMES[app.spinner_frame as usize]),
             "spinner glyph missing: {text}",
@@ -1923,16 +2170,28 @@ mod tests {
             stream_buffer: String::new(),
             spinner_frame: 0,
             sse_rx: Some(rx),
+            conn_status: ConnStatus::Connected,
+            conn_attempt: 0,
+            conn_error: None,
+            conn_since: Instant::now(),
+            managed: false,
         };
         tx.send(SseMsg::Delta("hel".to_owned())).unwrap();
         tx.send(SseMsg::Delta("lo".to_owned())).unwrap();
         app.drain_sse();
         assert_eq!(app.stream_buffer, "hello");
-        assert_eq!(app.seen_len, 3, "buffer alone must not force an early rebuild");
+        assert_eq!(
+            app.seen_len, 3,
+            "buffer alone must not force an early rebuild"
+        );
         tx.send(SseMsg::Ended).unwrap();
         app.drain_sse();
         assert!(app.sse_rx.is_none(), "ended stream must be dropped");
-        assert_eq!(app.seen_len, usize::MAX, "end must force the next poll to rebuild");
+        assert_eq!(
+            app.seen_len,
+            usize::MAX,
+            "end must force the next poll to rebuild"
+        );
     }
 
     #[test]
@@ -1947,7 +2206,10 @@ mod tests {
         assert_eq!(parse_command("/quit"), ("quit", ""));
         assert_eq!(parse_command("/mcps"), ("mcps", ""));
         assert_eq!(parse_command("/prompts"), ("prompts", ""));
-        assert_eq!(parse_command("/fixture:greet a b"), ("fixture:greet", "a b"));
+        assert_eq!(
+            parse_command("/fixture:greet a b"),
+            ("fixture:greet", "a b")
+        );
     }
 
     #[test]
@@ -1989,11 +2251,20 @@ mod tests {
             vec!["say", "it", "s", "me"]
         );
         assert_eq!(parse_prompt_arguments(""), Vec::<String>::new());
-        assert_eq!(parse_prompt_arguments("one  two   three"), vec!["one", "two", "three"]);
-        assert_eq!(parse_prompt_arguments("[Image 3] describe"), vec!["[Image 3]", "describe"]);
+        assert_eq!(
+            parse_prompt_arguments("one  two   three"),
+            vec!["one", "two", "three"]
+        );
+        assert_eq!(
+            parse_prompt_arguments("[Image 3] describe"),
+            vec!["[Image 3]", "describe"]
+        );
         assert_eq!(parse_prompt_arguments("[image 42]"), vec!["[image 42]"]);
         assert_eq!(parse_prompt_arguments("[Image x]"), vec!["[Image", "x]"]);
-        assert_eq!(parse_prompt_arguments(r#""unterminated"#), vec!["unterminated"]);
+        assert_eq!(
+            parse_prompt_arguments(r#""unterminated"#),
+            vec!["unterminated"]
+        );
         assert_eq!(parse_prompt_arguments(r#""""#), vec![""]);
         assert_eq!(
             parse_prompt_arguments(r#"a "b c" d 'e f' g"#),
@@ -2036,6 +2307,11 @@ mod tests {
             stream_buffer: String::new(),
             spinner_frame: 0,
             sse_rx: None,
+            conn_status: ConnStatus::Connected,
+            conn_attempt: 0,
+            conn_error: None,
+            conn_since: Instant::now(),
+            managed: false,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -2117,6 +2393,11 @@ mod tests {
             stream_buffer: String::new(),
             spinner_frame: 0,
             sse_rx: None,
+            conn_status: ConnStatus::Connected,
+            conn_attempt: 0,
+            conn_error: None,
+            conn_since: Instant::now(),
+            managed: false,
         };
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -2126,9 +2407,15 @@ mod tests {
                 text.push_str(buffer[(x, y)].symbol());
             }
         }
-        assert!(text.contains("MCP servers (2)"), "dialog title missing: {text}");
+        assert!(
+            text.contains("MCP servers (2)"),
+            "dialog title missing: {text}"
+        );
         assert!(text.contains("figma"), "figma row missing: {text}");
-        assert!(text.contains("Sign in required"), "needs_auth label missing: {text}");
+        assert!(
+            text.contains("Sign in required"),
+            "needs_auth label missing: {text}"
+        );
         assert!(text.contains("notes"), "pending row missing: {text}");
         assert!(text.contains("Connecting"), "pending label missing: {text}");
 
@@ -2142,7 +2429,209 @@ mod tests {
                 text.push_str(buffer[(x, y)].symbol());
             }
         }
-        assert!(text.contains("mcp_deadbeef"), "integration id missing: {text}");
-        assert!(text.contains("DEVcode mcp auth figma"), "auth hint missing: {text}");
+        assert!(
+            text.contains("mcp_deadbeef"),
+            "integration id missing: {text}"
+        );
+        assert!(
+            text.contains("DEVcode mcp auth figma"),
+            "auth hint missing: {text}"
+        );
+    }
+
+    fn render_to_text(terminal: &mut Terminal<ratatui::backend::TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn reconnecting_overlay_renders_loss_state() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
+            sessions: vec![SessionRow {
+                id: "ses_1".to_owned(),
+                title: "demo".to_owned(),
+            }],
+            selected: 0,
+            transcript: vec![],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: None,
+            mcp_prompt_cache: None,
+            seen_len: 0,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            spinner_frame: 0,
+            sse_rx: None,
+            conn_status: ConnStatus::Reconnecting,
+            conn_attempt: 1,
+            conn_error: Some("service unreachable".to_owned()),
+            conn_since: Instant::now() - Duration::from_secs(2),
+            managed: false,
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text = render_to_text(&mut terminal);
+        assert!(
+            text.contains("Connection lost…"),
+            "overlay title missing: {text}"
+        );
+        assert!(
+            text.contains("Reconnecting to the server automatically."),
+            "overlay hint missing: {text}",
+        );
+        assert!(
+            text.contains(SPINNER_FRAMES[app.spinner_frame as usize]),
+            "spinner missing: {text}",
+        );
+    }
+
+    #[test]
+    fn reconnecting_overlay_hidden_within_grace_period() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
+            sessions: vec![],
+            selected: 0,
+            transcript: vec![],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: None,
+            mcp_prompt_cache: None,
+            seen_len: 0,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            spinner_frame: 0,
+            sse_rx: None,
+            conn_status: ConnStatus::Reconnecting,
+            conn_attempt: 1,
+            conn_error: None,
+            conn_since: Instant::now(),
+            managed: false,
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text = render_to_text(&mut terminal);
+        assert!(
+            !text.contains("Connection lost…"),
+            "overlay shown too early: {text}"
+        );
+    }
+
+    #[test]
+    fn reconnecting_overlay_shown_after_grace_period() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
+            sessions: vec![SessionRow {
+                id: "ses_1".to_owned(),
+                title: "demo".to_owned(),
+            }],
+            selected: 0,
+            transcript: vec![],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: None,
+            mcp_prompt_cache: None,
+            seen_len: 0,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            spinner_frame: 0,
+            sse_rx: None,
+            conn_status: ConnStatus::Reconnecting,
+            conn_attempt: 1,
+            conn_error: None,
+            conn_since: Instant::now() - Duration::from_secs(10),
+            managed: false,
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text = render_to_text(&mut terminal);
+        assert!(
+            text.contains("Connection lost…"),
+            "overlay missing after grace: {text}"
+        );
+    }
+
+    #[test]
+    fn reconnecting_overlay_managed_shows_restart_variant() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App {
+            base: String::new(),
+            auth: String::new(),
+            theme: Theme::default(),
+            theme_name: "devcode".to_owned(),
+            sessions: vec![SessionRow {
+                id: "ses_1".to_owned(),
+                title: "demo".to_owned(),
+            }],
+            selected: 0,
+            transcript: vec![],
+            scroll: 0,
+            viewport_h: 10,
+            input: String::new(),
+            model: None,
+            status: String::new(),
+            status_err: false,
+            mcp: None,
+            prompts: None,
+            mcp_prompt_cache: None,
+            seen_len: 0,
+            last_sessions_refresh: Instant::now(),
+            last_messages_refresh: Instant::now(),
+            stream_buffer: String::new(),
+            spinner_frame: 0,
+            sse_rx: None,
+            conn_status: ConnStatus::Reconnecting,
+            conn_attempt: 1,
+            conn_error: None,
+            conn_since: Instant::now() - Duration::from_secs(10),
+            managed: true,
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text = render_to_text(&mut terminal);
+        assert!(
+            text.contains("Restarting service…"),
+            "managed title missing: {text}"
+        );
+        assert!(
+            text.contains("Your session will resume automatically."),
+            "managed hint missing: {text}",
+        );
     }
 }
