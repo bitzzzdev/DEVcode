@@ -382,6 +382,58 @@ pub fn transcript_lines(messages: &[Value]) -> Vec<String> {
     lines
 }
 
+/// Split one assistant prose line into styled markdown spans: headings,
+/// bold text and inline code. Pure; tested.
+fn markdown_line_spans(line: &str, theme: &Theme) -> Vec<(String, Style)> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') {
+        let text = trimmed.trim_start_matches('#').trim_start().to_owned();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        return vec![(text, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))];
+    }
+    let parts: Vec<&str> = line.split('`').collect();
+    let mut spans: Vec<(String, Style)> = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index % 2 == 1 {
+            spans.push((part.to_string(), Style::default().fg(theme.success)));
+            continue;
+        }
+        spans.extend(text_spans(part, theme));
+    }
+    if spans.is_empty() {
+        spans.push((line.to_owned(), Style::default().fg(theme.assistant)));
+    }
+    spans
+}
+
+fn text_spans(text: &str, theme: &Theme) -> Vec<(String, Style)> {
+    let mut spans: Vec<(String, Style)> = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(open) = rest.find("**") {
+            let Some(closing) = rest[open + 2..].find("**").map(|i| open + 2 + i + 2) else {
+                break;
+            };
+            let content_end = closing - 2;
+            let before = rest[..open].to_owned();
+            if !before.is_empty() {
+                spans.push((before, Style::default().fg(theme.foreground)));
+            }
+            let bold_text = rest[open + 2..content_end].to_owned();
+            if !bold_text.is_empty() {
+                spans.push((bold_text, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+            }
+            rest = &rest[closing..];
+            continue;
+        }
+        spans.push((rest.to_owned(), Style::default().fg(theme.foreground)));
+        break;
+    }
+    spans
+}
+
 /// Parse the input line. Returns (command, argument). "" command = plain prompt.
 pub fn parse_command(input: &str) -> (&str, &str) {
     let trimmed = input.trim();
@@ -981,6 +1033,16 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             } else {
                 Style::default().fg(app.theme.foreground).bg(app.theme.background)
             };
+            if line.starts_with("assistant ›") {
+                let text = line.strip_prefix("assistant ›").unwrap_or(line).trim_start();
+                let mut spans = vec![Span::styled("assistant ›".to_owned(), style)];
+                spans.extend(
+                    markdown_line_spans(text, &app.theme)
+                        .into_iter()
+                        .map(|(content, content_style)| Span::styled(content, content_style)),
+                );
+                return Line::from(spans);
+            }
             Line::from(Span::styled(line.clone(), style))
         })
         .collect();
@@ -1422,6 +1484,21 @@ mod tests {
     #[test]
     fn transcript_empty_shows_placeholder() {
         assert_eq!(transcript_lines(&[]), vec!["(no messages yet)".to_owned()]);
+    }
+
+    #[test]
+    fn markdown_line_spans_bold_and_inline_code() {
+        let spans = markdown_line_spans("plain **bold** and `code`", &Theme::default());
+        let texts: Vec<&str> = spans.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(texts, vec!["plain ", "bold", " and ", "code"]);
+    }
+
+    #[test]
+    fn markdown_line_spans_heading_is_accent_bold() {
+        let spans = markdown_line_spans("## Sub heading", &Theme::default());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].0, "Sub heading");
+        assert!(spans[0].1.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
