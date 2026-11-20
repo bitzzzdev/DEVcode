@@ -24,6 +24,9 @@ Release notes for DevCode V2, newest first.
   instead; `devcode upgrade` fails with a message pointing there.
 - TUI mouse capture defaults to off (`"mouse": false`), making the TUI keyboard-first. Set `"mouse": true` to
   restore it.
+- Performance: the Rust PTY service release build now uses full link time optimization (`lto = "fat"`) with the
+  existing single codegen unit and symbol stripping, so the shipped `DEVcode` binary is smaller and starts faster.
+- Performance: the TUI source watcher skips idle poll ticks while no watched source is missing, so idle wakeups stop.
 - Third-party names and packages are unchanged from upstream: `@opencode/pty`, `ai.opencode.managed`,
   `index.opencode-`/`@opencode-ai/*` prefixes, `@textjs/opencode`, `opencode-gitlab-auth`,
   `@brendonovich/vite-plugin-opencode`, `shekohex/opencode-pty`, `anomalyco/models.dev`, `anomalyco/opentui`,
