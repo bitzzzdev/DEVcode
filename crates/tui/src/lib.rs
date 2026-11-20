@@ -1105,11 +1105,26 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if !app.sessions.is_empty() {
         list_state.select(Some(app.selected));
     }
+    // The sidebar header mirrors the JS sidebar: the active session title on
+    // top and a session count footer, with the selectable list between them.
+    let active_title = app
+        .sessions
+        .get(app.selected)
+        .map(|session| session.title.clone())
+        .unwrap_or_else(|| "sessions".to_owned());
+    let session_count = format!(" {} session{} ", app.sessions.len(), if app.sessions.len() == 1 { "" } else { "s" });
     let sidebar = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::RIGHT)
-                .title(" sessions ")
+                .title(Line::from(Span::styled(
+                    format!(" {active_title} "),
+                    Style::default().fg(app.theme.foreground).add_modifier(Modifier::BOLD),
+                )))
+                .title_bottom(Line::from(Span::styled(
+                    session_count,
+                    Style::default().fg(app.theme.muted),
+                )))
                 .border_style(Style::default().fg(app.theme.background_element).bg(app.theme.background))
                 .style(Style::default().bg(app.theme.background)),
         )
