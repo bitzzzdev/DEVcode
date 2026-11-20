@@ -97,7 +97,11 @@ export function createSourceWatcher(onChange: () => void) {
     watched.clear()
     missing.clear()
   }
-  const poll = setInterval(() => missing.forEach((target) => arm(target, true)), 500)
+  const poll = setInterval(() => {
+    // Nothing is waiting on a missing path while the watched sources are all present; skip the tick.
+    if (missing.size === 0) return
+    missing.forEach((target) => arm(target, true))
+  }, 500)
   poll.unref()
   return {
     add: (target: string) => add(target, false),
