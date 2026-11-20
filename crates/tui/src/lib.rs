@@ -496,10 +496,45 @@ pub fn transcript_lines(messages: &[Value]) -> Vec<String> {
     lines
 }
 
+/// True when the line is a markdown horizontal rule such as `---`, `***` or
+/// `___`.
+fn is_horizontal_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == '_' || c == '*')
+}
+
+/// True when the line is a markdown list item such as `- item`, `* item`,
+/// `+ item` or `1. item`.
+fn is_list_item(line: &str) -> bool {
+    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
+        return true;
+    }
+    let first = line.chars().next().unwrap_or(' ');
+    if !first.is_ascii_digit() {
+        return false;
+    }
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let rest = line.trim_start_matches(digits.as_str());
+    rest.starts_with(". ") || rest.starts_with("). ")
+}
+
 /// Split one assistant prose line into styled markdown spans: headings,
-/// bold text and inline code. Pure; tested.
+/// bold text, inline code, emphasis, strikethrough, lists, quotes, rules and
+/// fenced code blocks. Pure; tested.
 fn markdown_line_spans(line: &str, theme: &Theme) -> Vec<(String, Style)> {
     let trimmed = line.trim_start();
+    if trimmed.starts_with("```") {
+        let code = trimmed.trim_start_matches('`').trim_end().to_owned();
+        if code.is_empty() {
+            return Vec::new();
+        }
+        return vec![(
+            code,
+            Style::default()
+                .fg(theme.success)
+                .bg(theme.background_element),
+        )];
+    }
     if trimmed.starts_with('#') {
         let text = trimmed.trim_start_matches('#').trim_start().to_owned();
         if text.is_empty() {
@@ -511,6 +546,15 @@ fn markdown_line_spans(line: &str, theme: &Theme) -> Vec<(String, Style)> {
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )];
+    }
+    if trimmed.starts_with('>') {
+        return vec![(trimmed.to_owned(), Style::default().fg(theme.warning))];
+    }
+    if is_horizontal_rule(trimmed) {
+        return vec![(line.to_owned(), Style::default().fg(theme.muted))];
+    }
+    if is_list_item(trimmed) {
+        return vec![(trimmed.to_owned(), Style::default().fg(theme.accent))];
     }
     let parts: Vec<&str> = line.split('`').collect();
     let mut spans: Vec<(String, Style)> = Vec::new();
@@ -531,31 +575,74 @@ fn text_spans(text: &str, theme: &Theme) -> Vec<(String, Style)> {
     let mut spans: Vec<(String, Style)> = Vec::new();
     let mut rest = text;
     while !rest.is_empty() {
-        if let Some(open) = rest.find("**") {
-            let Some(closing) = rest[open + 2..].find("**").map(|i| open + 2 + i + 2) else {
-                break;
-            };
-            let content_end = closing - 2;
-            let before = rest[..open].to_owned();
-            if !before.is_empty() {
-                spans.push((before, Style::default().fg(theme.foreground)));
+        let mut chosen: Option<(usize, usize, &str, usize)> = None;
+        if let Some(open) = rest.find("***") {
+            if let Some(closing) = find_closing(rest, open, "***") {
+                chosen = Some((open, 3, "***", closing));
             }
-            let bold_text = rest[open + 2..content_end].to_owned();
-            if !bold_text.is_empty() {
-                spans.push((
-                    bold_text,
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-            rest = &rest[closing..];
-            continue;
         }
-        spans.push((rest.to_owned(), Style::default().fg(theme.foreground)));
-        break;
+        if let Some(open) = rest.find("**") {
+            let better = chosen.map_or(true, |chosen| open < chosen.0);
+            if better {
+                if let Some(closing) = find_closing(rest, open, "**") {
+                    chosen = Some((open, 2, "**", closing));
+                }
+            }
+        }
+        if let Some(open) = rest.find("~~") {
+            let better = chosen.map_or(true, |chosen| open < chosen.0);
+            if better {
+                if let Some(closing) = find_closing(rest, open, "~~") {
+                    chosen = Some((open, 2, "~~", closing));
+                }
+            }
+        }
+        if let Some(open) = rest.find('*') {
+            let better = chosen.map_or(true, |chosen| open < chosen.0);
+            if better {
+                if let Some(closing) = find_closing(rest, open, "*") {
+                    chosen = Some((open, 1, "*", closing));
+                }
+            }
+        }
+        let Some((open, width, marker, closing)) = chosen else {
+            spans.push((rest.to_owned(), Style::default().fg(theme.foreground)));
+            break;
+        };
+        let content_end = closing - width;
+        let before = rest[..open].to_owned();
+        if !before.is_empty() {
+            spans.push((before, Style::default().fg(theme.foreground)));
+        }
+        let content = rest[open + width..content_end].to_owned();
+        if !content.is_empty() {
+            let style = match marker {
+                "***" => Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                "**" => Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+                "~~" => Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::CROSSED_OUT),
+                _ => Style::default()
+                    .fg(theme.foreground)
+                    .add_modifier(Modifier::ITALIC),
+            };
+            spans.push((content, style));
+        }
+        rest = &rest[closing..];
     }
     spans
+}
+
+/// Byte index just past the closing delimiter of the marker opened at `open`.
+fn find_closing(rest: &str, open: usize, marker: &str) -> Option<usize> {
+    let width = marker.len();
+    rest[open + width..]
+        .find(marker)
+        .map(|i| open + width + i + width)
 }
 
 /// Parse the input line. Returns (command, argument). "" command = plain prompt.
@@ -2030,6 +2117,37 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].0, "Sub heading");
         assert!(spans[0].1.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn markdown_line_spans_emphasis_strikethrough_and_bold_italic() {
+        let spans = text_spans("a *b* c ~~gone~~ d ***both*** e", &Theme::default());
+        let texts: Vec<&str> = spans.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(texts, vec!["a ", "b", " c ", "gone", " d ", "both", " e"]);
+        assert!(spans[1].1.add_modifier.contains(Modifier::ITALIC));
+        assert!(spans[3].1.add_modifier.contains(Modifier::CROSSED_OUT));
+        assert!(spans[5].1.add_modifier.contains(Modifier::BOLD));
+        assert!(spans[5].1.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn markdown_line_spans_code_fence_uses_code_style() {
+        let spans = markdown_line_spans("```rust", &Theme::default());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].0, "rust");
+    }
+
+    #[test]
+    fn markdown_line_spans_block_lines_use_block_styles() {
+        let list = markdown_line_spans("- item", &Theme::default());
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "- item");
+        let quote = markdown_line_spans("> quote", &Theme::default());
+        assert_eq!(quote.len(), 1);
+        assert_eq!(quote[0].0, "> quote");
+        let rule = markdown_line_spans("---", &Theme::default());
+        assert_eq!(rule.len(), 1);
+        assert_eq!(rule[0].0, "---");
     }
 
     #[test]
