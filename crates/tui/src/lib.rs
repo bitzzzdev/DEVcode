@@ -1356,7 +1356,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         format!(" {} ", app.status)
     };
-    let help = " ↑↓ sessions · Enter send · /new /mcps /prompts · PgUp/PgDn scroll · Ctrl-C quit";
+    let help = " ↑↓ sessions · Enter send · /new /mcps /prompts /sessions /rename /theme · PgUp/PgDn scroll · Ctrl-C quit";
     let footer_line = format!("{status}{model}{help}");
     let footer_fg = if app.status_err {
         app.theme.error
