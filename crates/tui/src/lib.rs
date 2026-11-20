@@ -72,6 +72,31 @@ pub enum ConnStatus {
     Disconnected,
 }
 
+/// Color theme mode, mirroring the JS TUI theme mode (`dark` | `light`) resolved
+/// from the active theme document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeMode {
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
 /// TUI color theme. Defaults to the dark palette of the JS TUI default devcode
 /// theme; later increments resolve user themes from the theme registry.
 #[derive(Debug, Clone)]
@@ -114,6 +139,77 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// The JS v2 devcode theme, resolved for the requested mode. Dark resolves the
+    /// default devcode palette; light resolves the v2 document light hues.
+    pub fn devcode(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::Dark => Self::default(),
+            ThemeMode::Light => Self {
+                background: Color::Rgb(255, 255, 255),
+                background_panel: Color::Rgb(250, 250, 250),
+                background_element: Color::Rgb(245, 245, 245),
+                foreground: Color::Rgb(26, 26, 26),
+                muted: Color::Rgb(138, 138, 138),
+                accent: Color::Rgb(214, 140, 39),
+                user: Color::Rgb(59, 125, 216),
+                assistant: Color::Rgb(26, 26, 26),
+                tool: Color::Rgb(138, 138, 138),
+                status: Color::Rgb(138, 138, 138),
+                error: Color::Rgb(209, 56, 61),
+                warning: Color::Rgb(245, 167, 66),
+                success: Color::Rgb(61, 154, 87),
+                info: Color::Rgb(49, 135, 149),
+            },
+        }
+    }
+
+    /// The JS v2 devcode2 theme, resolved for the requested mode.
+    pub fn devcode2(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::Dark => Self {
+                background: Color::Rgb(8, 8, 8),
+                background_panel: Color::Rgb(20, 20, 20),
+                background_element: Color::Rgb(32, 32, 32),
+                foreground: Color::Rgb(255, 255, 255),
+                muted: Color::Rgb(128, 128, 128),
+                accent: Color::Rgb(147, 162, 183),
+                user: Color::Rgb(118, 153, 254),
+                assistant: Color::Rgb(255, 255, 255),
+                tool: Color::Rgb(128, 128, 128),
+                status: Color::Rgb(128, 128, 128),
+                error: Color::Rgb(239, 108, 108),
+                warning: Color::Rgb(245, 167, 66),
+                success: Color::Rgb(158, 231, 122),
+                info: Color::Rgb(118, 153, 254),
+            },
+            ThemeMode::Light => Self {
+                background: Color::Rgb(255, 255, 255),
+                background_panel: Color::Rgb(242, 242, 242),
+                background_element: Color::Rgb(221, 221, 221),
+                foreground: Color::Rgb(16, 16, 16),
+                muted: Color::Rgb(80, 80, 80),
+                accent: Color::Rgb(110, 115, 128),
+                user: Color::Rgb(108, 143, 254),
+                assistant: Color::Rgb(16, 16, 16),
+                tool: Color::Rgb(80, 80, 80),
+                status: Color::Rgb(80, 80, 80),
+                error: Color::Rgb(236, 98, 98),
+                warning: Color::Rgb(214, 140, 39),
+                success: Color::Rgb(98, 236, 98),
+                info: Color::Rgb(108, 143, 254),
+            },
+        }
+    }
+
+    /// Resolve a ported theme by name and mode; themes without a light mode resolve dark.
+    pub fn for_mode(name: &str, mode: ThemeMode) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "devcode" => Some(Self::devcode(mode)),
+            "devcode2" => Some(Self::devcode2(mode)),
+            _ => Self::named(name),
+        }
+    }
+
     /// Named dark themes ported from the JS TUI assets. Returns None when the
     /// name is unknown, so callers can fall back to the default devcode palette.
     pub fn named(name: &str) -> Option<Theme> {
@@ -197,6 +293,7 @@ pub struct App {
     base: String,
     theme: Theme,
     theme_name: String,
+    theme_mode: ThemeMode,
     auth: String,
     sessions: Vec<SessionRow>,
     selected: usize,
@@ -247,6 +344,7 @@ pub fn run() -> ExitCode {
         base,
         theme: Theme::default(),
         theme_name: "devcode".to_owned(),
+        theme_mode: ThemeMode::Dark,
         auth,
         sessions: Vec::new(),
         selected: 0,
@@ -1083,6 +1181,14 @@ impl App {
         }
     }
 
+    /// Switch the active color theme mode and re-resolve the palette from the
+    /// current theme name.
+    fn set_theme_mode(&mut self, mode: ThemeMode) {
+        self.theme_mode = mode;
+        self.theme = Theme::for_mode(&self.theme_name, mode).unwrap_or_else(Theme::default);
+        self.set_status(format!("theme mode: {}", mode.label()), false);
+    }
+
     fn send(&mut self) {
         let (command, argument) = {
             let (command, argument) = parse_command(&self.input);
@@ -1153,9 +1259,12 @@ impl App {
                         .nth(1)
                         .copied()
                         .unwrap_or(THEME_NAMES[0]);
-                    self.theme = Theme::named(next).unwrap_or_default();
+                    self.theme =
+                        Theme::for_mode(next, self.theme_mode).unwrap_or_else(Theme::default);
                     self.theme_name = next.to_owned();
                     self.set_status(format!("theme: {next}"), false);
+                } else if let Some(mode) = ThemeMode::from_name(&argument) {
+                    self.set_theme_mode(mode);
                 } else {
                     let next = THEME_NAMES
                         .iter()
@@ -1166,8 +1275,9 @@ impl App {
                         self.input.clear();
                         return;
                     };
-                    self.theme = Theme::named(next).unwrap_or_default();
                     self.theme_name = next.to_owned();
+                    self.theme =
+                        Theme::for_mode(next, self.theme_mode).unwrap_or_else(Theme::default);
                     self.set_status(format!("theme set to {next}"), false);
                 }
                 self.input.clear();
@@ -2151,6 +2261,65 @@ mod tests {
     }
 
     #[test]
+    fn theme_devcode_light_uses_light_surfaces() {
+        let theme = Theme::devcode(ThemeMode::Light);
+        assert_eq!(theme.background, Color::Rgb(255, 255, 255));
+        assert_eq!(theme.background_panel, Color::Rgb(250, 250, 250));
+        assert_eq!(theme.background_element, Color::Rgb(245, 245, 245));
+        assert_eq!(theme.foreground, Color::Rgb(26, 26, 26));
+        assert_eq!(theme.muted, Color::Rgb(138, 138, 138));
+        assert_eq!(theme.accent, Color::Rgb(214, 140, 39));
+        assert_eq!(theme.error, Color::Rgb(209, 56, 61));
+        assert_eq!(theme.success, Color::Rgb(61, 154, 87));
+    }
+
+    #[test]
+    fn theme_devcode2_light_uses_light_surfaces() {
+        let theme = Theme::devcode2(ThemeMode::Light);
+        assert_eq!(theme.background, Color::Rgb(255, 255, 255));
+        assert_eq!(theme.background_panel, Color::Rgb(242, 242, 242));
+        assert_eq!(theme.background_element, Color::Rgb(221, 221, 221));
+        assert_eq!(theme.foreground, Color::Rgb(16, 16, 16));
+        assert_eq!(theme.muted, Color::Rgb(80, 80, 80));
+    }
+
+    #[test]
+    fn theme_devcode_dark_matches_default_palette() {
+        assert_eq!(
+            Theme::devcode(ThemeMode::Dark).background,
+            Theme::default().background
+        );
+        assert_eq!(
+            Theme::devcode(ThemeMode::Dark).accent,
+            Theme::default().accent
+        );
+    }
+
+    #[test]
+    fn theme_for_mode_resolves_devcode_and_falls_back_to_dark() {
+        assert!(Theme::for_mode("devcode", ThemeMode::Light).is_some());
+        assert!(Theme::for_mode("devcode2", ThemeMode::Light).is_some());
+        assert!(Theme::for_mode("dracula", ThemeMode::Light).is_some());
+        assert!(Theme::for_mode("missing", ThemeMode::Light).is_none());
+    }
+
+    #[test]
+    fn theme_mode_parses_names() {
+        assert_eq!(ThemeMode::from_name("dark"), Some(ThemeMode::Dark));
+        assert_eq!(ThemeMode::from_name("LIGHT"), Some(ThemeMode::Light));
+        assert_eq!(ThemeMode::from_name("bogus"), None);
+    }
+
+    #[test]
+    fn markdown_light_theme_renders_light_tokens() {
+        let theme = Theme::devcode(ThemeMode::Light);
+        let spans = markdown_line_spans("## Heading", &theme);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].1.fg, Some(theme.accent));
+        assert!(spans[0].1.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
     fn renders_shell() {
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2159,6 +2328,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -2209,6 +2379,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -2270,6 +2441,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: Vec::new(),
             selected: 0,
             transcript: Vec::new(),
@@ -2399,6 +2571,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![],
             selected: 0,
             transcript: vec![],
@@ -2475,6 +2648,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![],
             selected: 0,
             transcript: vec!["you › hi".to_owned()],
@@ -2577,6 +2751,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -2629,6 +2804,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![],
             selected: 0,
             transcript: vec![],
@@ -2670,6 +2846,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
@@ -2714,6 +2891,7 @@ mod tests {
             auth: String::new(),
             theme: Theme::default(),
             theme_name: "devcode".to_owned(),
+            theme_mode: ThemeMode::Dark,
             sessions: vec![SessionRow {
                 id: "ses_1".to_owned(),
                 title: "demo".to_owned(),
