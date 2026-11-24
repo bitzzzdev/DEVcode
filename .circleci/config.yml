@@ -4,9 +4,13 @@ version: 2.1
 jobs:
   validate:
     docker:
-      - image: circleci/cli:cli
+      - image: cimg/base:stable
     steps:
       - checkout
+      - run:
+          name: Install CircleCI CLI
+          command: |
+            curl -LSfs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/master/install.sh | bash -s -- -b /usr/local/bin
       - run:
           name: Validate CircleCI config with the CircleCI CLI
           command: circleci config validate
