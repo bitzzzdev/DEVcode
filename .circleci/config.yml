@@ -13,6 +13,9 @@ jobs:
 
   build:
     parameters:
+      branch:
+        type: string
+        default: devDev
       target:
         type: string
         description: "DEVCODE_TARGET name from packages/cli/script/build.ts, e.g. linux-x64"
@@ -54,6 +57,7 @@ workflows:
       - build:
           requires:
             - validate
+          branch: devDev
           name: DEVcode-<< matrix.target >>
           matrix:
             parameters:
@@ -71,6 +75,7 @@ workflows:
       - build:
           requires:
             - validate
+          branch: devDev
           matrix:
             parameters:
               target:
