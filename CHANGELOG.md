@@ -29,6 +29,9 @@ Release notes for DevCode V2, newest first.
 - Performance: the TUI source watcher skips idle poll ticks while no watched source is missing, so idle wakeups stop.
 - CI: the CircleCI pipeline validates its config with the CircleCI CLI before builds, and release builds run
   through the release workflow.
+- GitHub mirror: the repository now also lives at `github.com/bitzzzdev/DEVcode`. Every push to `dev`, `devDev`, and
+  `rust-port` goes to both GitLab and GitHub. GitHub Actions builds the six Linux targets on each push
+  (`.github/workflows/ci.yml`) and attaches them to a GitHub release on tags (`.github/workflows/release.yml`).
 - Third-party names and packages are unchanged from upstream: `@opencode/pty`, `ai.opencode.managed`,
   `index.opencode-`/`@opencode-ai/*` prefixes, `@textjs/opencode`, `opencode-gitlab-auth`,
   `@brendonovich/vite-plugin-opencode`, `shekohex/opencode-pty`, `anomalyco/models.dev`, `anomalyco/opentui`,
