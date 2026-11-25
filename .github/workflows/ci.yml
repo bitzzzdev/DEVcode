@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [devDev, dev, rust-port]
+  pull_request:
+    branches: [devDev, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Verify build script is present
+        run: test -f packages/cli/script/build.ts
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - linux-x64
+          - linux-x64-baseline
+          - linux-x64-musl
+          - linux-x64-baseline-musl
+          - linux-arm64
+          - linux-arm64-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Cache Bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-deps-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-deps-
+      - name: Install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq unzip
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build DEVCODE_TARGET=${{ matrix.target }}
+        working-directory: packages/cli
+        env:
+          DEVCODE_TARGET: ${{ matrix.target }}
+        run: bun run script/build.ts
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DEVcode-${{ matrix.target }}
+          path: packages/cli/dist/cli-${{ matrix.target }}
+          if-no-files-found: error

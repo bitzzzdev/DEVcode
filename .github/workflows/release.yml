@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - linux-x64
+          - linux-x64-baseline
+          - linux-x64-musl
+          - linux-x64-baseline-musl
+          - linux-arm64
+          - linux-arm64-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq unzip
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build DEVCODE_TARGET=${{ matrix.target }}
+        working-directory: packages/cli
+        env:
+          DEVCODE_TARGET: ${{ matrix.target }}
+        run: bun run script/build.ts
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/cli/dist/cli-${{ matrix.target }}/bin/DEVcode
+          fail_on_unmatched_files: true
