@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [devDev, dev, rust-port]
+    branches: [devOpt, dev, rust-port]
   pull_request:
-    branches: [devDev, dev]
+    branches: [devOpt, dev]
   workflow_dispatch:
 
 concurrency:
