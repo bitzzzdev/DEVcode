@@ -34,6 +34,9 @@ Release notes for DevCode V2, newest first.
   (`.github/workflows/ci.yml`) and attaches them to a GitHub release on tags (`.github/workflows/release.yml`).
 - Dual release: `.github/workflows/release.yml` creates releases on both GitHub and GitLab when a `v*` tag is pushed
   (requires `GITLAB_TOKEN` secret for GitLab).
+- GitLab CI/CD: `.gitlab-ci.yml` fetches from GitHub, validates config with CircleCI CLI, builds the six Linux
+  targets, and provides a manual release step that creates a GitLab release via `glab` (requires `GITHUB_TOKEN`
+  in GitLab CI/CD variables for private repo access).
 - Branch rename: `devDev` renamed to `devOpt` and set as the default branch on both GitLab and GitHub.
 - Third-party names and packages are unchanged from upstream: `@opencode/pty`, `ai.opencode.managed`,
   `index.opencode-`/`@opencode-ai/*` prefixes, `@textjs/opencode`, `opencode-gitlab-auth`,
