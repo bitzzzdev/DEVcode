@@ -1,0 +1,119 @@
+# GitLab CI/CD that fetches from GitHub and builds DEVcode binaries.
+# Mirrors the GitHub Actions build job: validates config, then builds 6 Linux targets.
+# Requires GITHUB_TOKEN variable in GitLab CI/CD settings for private repo access.
+
+stages:
+  - validate
+  - build
+  - release
+
+variables:
+  # Use GitHub as the source; GitLab will clone from GitHub via the token.
+  GIT_STRATEGY: fetch
+  GIT_DEPTH: 1
+  # Bun version pinned to packageManager in package.json
+  BUN_VERSION: "1.4.4"
+
+.validate_template: &validate_template
+  stage: validate
+  image: cimg/base:stable
+  before_script:
+    - curl -LSfs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/master/install.sh | bash -s -- -b /usr/local/bin
+  script:
+    - circleci config validate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "devOpt"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "rust-port"
+
+validate:
+  <<: *validate_template
+
+.build_template: &build_template
+  stage: build
+  image: cimg/base:stable
+  before_script:
+    - curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"
+    - echo 'export PATH="$HOME/.bun/bin:$PATH"' >> "$BASH_ENV"
+    - apt-get update -qq && apt-get install -y -qq unzip
+    - bun install --frozen-lockfile
+  script:
+    - cd packages/cli
+    - DEVCODE_TARGET="${TARGET}" bun run script/build.ts
+  artifacts:
+    name: "DEVcode-${TARGET}"
+    paths:
+      - packages/cli/dist/cli-${TARGET}
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "devOpt"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "rust-port"
+
+build:linux-x64:
+  <<: *build_template
+  variables:
+    TARGET: "linux-x64"
+
+build:linux-x64-baseline:
+  <<: *build_template
+  variables:
+    TARGET: "linux-x64-baseline"
+
+build:linux-x64-musl:
+  <<: *build_template
+  variables:
+    TARGET: "linux-x64-musl"
+
+build:linux-x64-baseline-musl:
+  <<: *build_template
+  variables:
+    TARGET: "linux-x64-baseline-musl"
+
+build:linux-arm64:
+  <<: *build_template
+  variables:
+    TARGET: "linux-arm64"
+
+build:linux-arm64-musl:
+  <<: *build_template
+  variables:
+    TARGET: "linux-arm64-musl"
+
+# Release stage: trigger on tags, create GitLab release with all artifacts
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - |
+      NOTES="DEVcode release ${CI_COMMIT_TAG}\n\n## Binaries\n| Target | Binary |\n|--------|--------|\n| linux-x64 | DEVcode-linux-x64 |\n| linux-x64-baseline | DEVcode-linux-x64-baseline |\n| linux-x64-musl | DEVcode-linux-x64-musl |\n| linux-x64-baseline-musl | DEVcode-linux-x64-baseline-musl |\n| linux-arm64 | DEVcode-linux-arm64 |\n| linux-arm64-musl | DEVcode-linux-arm64-musl |\n\nEach archive contains the DEVcode binary built for the respective target."
+    - |
+      glab release create "${CI_COMMIT_TAG}" \
+        --name "DEVcode ${CI_COMMIT_TAG}" \
+        --notes "${NOTES}" \
+        build/linux-x64/DEVcode-linux-x64 \
+        build/linux-x64-baseline/DEVcode-linux-x64-baseline \
+        build/linux-x64-musl/DEVcode-linux-x64-musl \
+        build/linux-x64-baseline-musl/DEVcode-linux-x64-baseline-musl \
+        build/linux-arm64/DEVcode-linux-arm64 \
+        build/linux-arm64-musl/DEVcode-linux-arm64-musl
+  needs:
+    - job: build:linux-x64
+      artifacts: true
+    - job: build:linux-x64-baseline
+      artifacts: true
+    - job: build:linux-x64-musl
+      artifacts: true
+    - job: build:linux-x64-baseline-musl
+      artifacts: true
+    - job: build:linux-arm64
+      artifacts: true
+    - job: build:linux-arm64-musl
+      artifacts: true
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*/
+  when: manual
