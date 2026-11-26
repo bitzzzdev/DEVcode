@@ -36,8 +36,57 @@ jobs:
         env:
           DEVCODE_TARGET: ${{ matrix.target }}
         run: bun run script/build.ts
-      - name: Upload release asset
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DEVcode-${{ matrix.target }}
+          path: packages/cli/dist/cli-${{ matrix.target }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: DEVcode-*
+          merge-multiple: false
+          path: artifacts
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: packages/cli/dist/cli-${{ matrix.target }}/bin/DEVcode
+          files: |
+            artifacts/DEVcode-linux-x64/bin/DEVcode
+            artifacts/DEVcode-linux-x64-baseline/bin/DEVcode
+            artifacts/DEVcode-linux-x64-musl/bin/DEVcode
+            artifacts/DEVcode-linux-x64-baseline-musl/bin/DEVcode
+            artifacts/DEVcode-linux-arm64/bin/DEVcode
+            artifacts/DEVcode-linux-arm64-musl/bin/DEVcode
           fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup glab
+        if: env.GITLAB_TOKEN != ''
+        run: |
+          curl -sL https://gitlab.com/gitlab-org/cli/-/releases/v1.133.0/downloads/glab_1.133.0_Linux_x86_64.tar.gz | tar -xz -C /usr/local/bin glab
+          glab auth login --token "${GITLAB_TOKEN}" --hostname gitlab.com
+
+      - name: Create GitLab Release
+        if: env.GITLAB_TOKEN != ''
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          NOTES="DEVcode release ${TAG}\n\n## Binaries\n| Target | Binary |\n|--------|--------|\n| linux-x64 | DEVcode-linux-x64 |\n| linux-x64-baseline | DEVcode-linux-x64-baseline |\n| linux-x64-musl | DEVcode-linux-x64-musl |\n| linux-x64-baseline-musl | DEVcode-linux-x64-baseline-musl |\n| linux-arm64 | DEVcode-linux-arm64 |\n| linux-arm64-musl | DEVcode-linux-arm64-musl |\n\nEach archive contains the DEVcode binary built for the respective target."
+          glab release create "${TAG}" \
+            --name "DEVcode ${TAG}" \
+            --notes "${NOTES}" \
+            artifacts/DEVcode-linux-x64/bin/DEVcode \
+            artifacts/DEVcode-linux-x64-baseline/bin/DEVcode \
+            artifacts/DEVcode-linux-x64-musl/bin/DEVcode \
+            artifacts/DEVcode-linux-x64-baseline-musl/bin/DEVcode \
+            artifacts/DEVcode-linux-arm64/bin/DEVcode \
+            artifacts/DEVcode-linux-arm64-musl/bin/DEVcode
