@@ -32,6 +32,8 @@ Release notes for DevCode V2, newest first.
 - GitHub mirror: the repository now also lives at `github.com/bitzzzdev/DEVcode`. Every push to `dev`, `devOpt`, and
   `rust-port` goes to both GitLab and GitHub. GitHub Actions builds the six Linux targets on each push
   (`.github/workflows/ci.yml`) and attaches them to a GitHub release on tags (`.github/workflows/release.yml`).
+- Dual release: `.github/workflows/release.yml` creates releases on both GitHub and GitLab when a `v*` tag is pushed
+  (requires `GITLAB_TOKEN` secret for GitLab).
 - Branch rename: `devDev` renamed to `devOpt` and set as the default branch on both GitLab and GitHub.
 - Third-party names and packages are unchanged from upstream: `@opencode/pty`, `ai.opencode.managed`,
   `index.opencode-`/`@opencode-ai/*` prefixes, `@textjs/opencode`, `opencode-gitlab-auth`,
